@@ -88,30 +88,59 @@ const SOLANA_NETWORK_SUFFIX = network === "mainnet" ? "" : `?cluster=${network}`
       computationMonitor:   getPollingComputationMonitor({ rpcUrl: RPC }) }
   );
 
-  // Verify recipient has a registered Umbra account
+  // ── Gate: Recipient registration check ───────────────────────────────────
+  // Confidential transfers require the recipient's X25519 key to be registered
+  // on-chain — the protocol encrypts the amount using that key. Sending to an
+  // unregistered address fails at the protocol level.
+  // If unregistered, pivot to create-link.cjs (no registration required).
   console.log("\nVerifying recipient has a VeilPay account…");
-  const querier   = getUserAccountQuerierFunction({ client });
-  const recState  = await querier(toAddr);
+  const querier  = getUserAccountQuerierFunction({ client });
+  const recState = await querier(toAddr);
+
   if (recState.state !== "exists" || !recState.data.isUserAccountX25519KeyRegistered) {
-    console.error("\n❌ Recipient has no VeilPay account.");
-    console.error("   They must visit veilpayments.xyz and connect their wallet at least once before receiving confidential transfers.");
+    console.error("\n⚠️  Recipient is not registered with VeilPay.");
+    console.error("   Confidential transfers require the recipient to have connected to");
+    console.error("   veilpayments.xyz at least once so their X25519 encryption key is on-chain.");
+    console.error("\n   ➡  Use a Private Link instead — no recipient registration needed:");
+    console.error(`      node create-link.cjs --amount ${amountArg} --token ${token} --network ${network}`);
+    console.error("   The recipient can claim it from any wallet at their convenience.");
     process.exit(1);
   }
   console.log("   Recipient verified ✓");
 
-  // Send confidential transfer
+  // ── Send confidential transfer ────────────────────────────────────────────
   console.log("\nSending confidential transfer…");
   const deposit = getPublicBalanceToEncryptedBalanceDirectDepositorFunction({ client });
-  const sig = await deposit(toAddr, tokenCfg.mint, amountRaw);
+  const res = await deposit(toAddr, tokenCfg.mint, amountRaw);
 
-  const sigStr = typeof sig === "string" ? sig : String(sig);
+  // The SDK returns an object, not a plain string.
+  // callbackSignature = finalized on-chain tx (preferred — use for explorer links).
+  // queueSignature    = proof entered the MPC queue (available first).
+  // Using String() on the raw object gives "[object Object]" — always extract explicitly.
+  const finalSig   = res?.callbackSignature?.toString() ?? null;
+  const queueSig   = res?.queueSignature?.toString()    ?? null;
+  const displaySig = finalSig || queueSig;
+
   console.log("\n✅ Confidential transfer sent!");
   console.log(`   Recipient: ${toAddr}`);
   console.log(`   Amount:    hidden on-chain (${amountArg} ${token})`);
-  if (sigStr && sigStr.length > 10) {
-    console.log(`   Explorer:  https://solscan.io/tx/${sigStr}${SOLANA_NETWORK_SUFFIX}`);
+  if (finalSig) {
+    console.log(`   Finalized: https://solscan.io/tx/${finalSig}${SOLANA_NETWORK_SUFFIX}`);
+  } else if (queueSig) {
+    console.log(`   Queued:    https://solscan.io/tx/${queueSig}${SOLANA_NETWORK_SUFFIX}`);
+    console.log("   (callbackSignature not yet available — MPC finalization in progress)");
   }
-  console.log("\nNote: The recipient can withdraw from their Dashboard at veilpayments.xyz");
+  console.log("\n   The recipient can withdraw from their Dashboard at veilpayments.xyz");
+
+  if (process.env.DEBUG) {
+    // BigInt-safe serializer — SDK responses may contain BigInt fields (e.g. userCommitment).
+    // JSON.stringify() throws "Do not know how to serialize a BigInt" without this.
+    const safe = (_, v) => typeof v === "bigint" ? v.toString() : v;
+    console.log("\n[DEBUG] Raw response:", JSON.stringify(res, safe, 2));
+  }
+
+  // Explicit exit — Umbra/Solana SDK holds WebSocket connections open indefinitely.
+  process.exit(0);
 })().catch((e) => {
   console.error("\n❌ Transfer failed:", e.message);
   if (process.env.DEBUG) console.error(e);
