@@ -28,9 +28,6 @@ const crypto = require("crypto");
 const urlMod = require("url");
 
 // ─── Runtime patches ─────────────────────────────────────────────────────────
-// The ZK prover downloads circuit files to ~/.veilpay/zk-cache/ then fetches
-// them via file:// URLs. Node.js native fetch (Undici) cannot handle file://
-// — patch it here before any SDK code runs.
 const _nativeFetch = global.fetch;
 global.fetch = async (input, init) => {
   const inputUrl = typeof input === "string" ? input : input?.url;
@@ -51,7 +48,6 @@ global.fetch = async (input, init) => {
 
 const args = process.argv.slice(2);
 const get  = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
-const has  = (f) => args.includes(f);
 
 const amountArg   = get("--amount");
 const token       = (get("--token") || "SOL").toUpperCase();
@@ -91,16 +87,17 @@ const INDEXER = network === "mainnet"
 
 const CDN_BASE  = "https://d3j9fjdkre529f.cloudfront.net";
 const ZK_CACHE  = path.join(os.homedir(), ".veilpay", "zk-cache");
-const SITE_BASE = "https://www.veilpayments.xyz";
-const SOLANA_NETWORK_SUFFIX = network === "mainnet" ? "" : `?cluster=${network}`;
+const SITE_BASE = network === "mainnet" ? "https://veilpay.xyz" : "https://dev.veilpay.xyz";
 
-// ─── ZK Asset Provider (Node.js) ─────────────────────────────────────────────
+/** Minimum SOL to send to ephemeral account to cover registration + withdrawal fees (0.018 SOL) */
+const EPHEMERAL_BUFFER = 18_000_000;
+
+// ─── Helpers ──────────────────────────────────────────────────────────────────
 
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const tmp  = dest + ".tmp";
     const file = fs.createWriteStream(tmp);
-    // User-Agent required — CloudFront returns HTTP 403 on headless/bot requests
     const opts = { headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" } };
     https.get(url, opts, (res) => {
       if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode} for ${url}`)); return; }
@@ -118,7 +115,9 @@ function makeNodeZkAssetProvider() {
   return {
     async getAssetUrls(type, variant) {
       if (!manifest) {
-        const res = await fetch(`${CDN_BASE}/manifest.json`);
+        const res = await fetch(`${CDN_BASE}/manifest.json`, {
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" }
+        });
         if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
         manifest = await res.json();
       }
@@ -152,6 +151,39 @@ function makeNodeZkAssetProvider() {
   };
 }
 
+/**
+ * Custom transaction forwarder that skips preflight simulation.
+ * Essential for devnet reliability when sending multiple transactions in sequence.
+ */
+function makeAgentForwarder(connection) {
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async fireAndForget(tx) {
+      const sigs = Object.values(tx.signatures);
+      const encodeU16 = (n) => {
+        if (n < 0x80) return [n];
+        return [(n & 0x7f) | 0x80, n >> 7];
+      };
+      const countBytes = new Uint8Array(encodeU16(sigs.length));
+      const wire = new Uint8Array(countBytes.length + sigs.length * 64 + tx.messageBytes.length);
+      wire.set(countBytes, 0);
+      let off = countBytes.length;
+      for (const sig of sigs) {
+        wire.set(sig || new Uint8Array(64), off);
+        off += 64;
+      }
+      wire.set(tx.messageBytes, off);
+      return connection.sendRawTransaction(wire, { skipPreflight: true });
+    },
+    async forwardSequentially(transactions) {
+      const sigs = [];
+      for (const tx of transactions) sigs.push(await this.fireAndForget(tx));
+      return sigs;
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  };
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -160,9 +192,7 @@ function makeNodeZkAssetProvider() {
   const {
     createSignerFromPrivateKeyBytes, getUmbraClient,
     getUserRegistrationFunction, getUserAccountQuerierFunction,
-    getUserAccountX25519KeypairDeriver, getMasterViewingKeyX25519KeypairDeriver,
     getPublicBalanceToReceiverClaimableUtxoCreatorFunction,
-    getPollingTransactionForwarder, getPollingComputationMonitor,
   } = require("@umbra-privacy/sdk");
   const {
     getUserRegistrationProver,
@@ -179,27 +209,25 @@ function makeNodeZkAssetProvider() {
   const senderSigner  = await createSignerFromPrivateKeyBytes(senderSecret);
   const senderAddress = senderSigner.address.toString();
 
-  // Snapshot balance BEFORE sending so we can show the delta at the end
+  // Check Balance
   const connection   = new Connection(RPC, "confirmed");
   const balanceBefore = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
-  const senderSolBal  = balanceBefore;
-
-  console.log(`\nSender wallet: ${senderAddress}`);
-  console.log(`Balance now:   ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
-  console.log(`Sending:       ${amountArg} ${token} on ${network}`);
-  if (memo)   console.log(`Memo:          "${memo}"`);
-  if (lockTo) console.log(`Locked to:     ${lockTo}`);
-  const EPHEMERAL_BUFFER = 0.02 * LAMPORTS_PER_SOL; // ~0.02 SOL for ephemeral fees
-  const minRequired  = token === "SOL"
-    ? amountRaw + BigInt(Math.round(EPHEMERAL_BUFFER)) + 10_000n
-    : BigInt(Math.round(EPHEMERAL_BUFFER)) + 10_000n;
-
-  if (BigInt(senderSolBal) < minRequired) {
-    const need = Number(minRequired) / LAMPORTS_PER_SOL;
-    console.error(`\nInsufficient SOL. Need ~${need.toFixed(4)} SOL (have ${(senderSolBal / LAMPORTS_PER_SOL).toFixed(4)}).`);
-    console.error("Run: node wallet.cjs airdrop   (devnet only)");
+  
+  // Link creation requires:
+  // 1. Funding ephemeral (0.018 SOL)
+  // 2. Deposit amount
+  // 3. Register sender fees (approx 0.005)
+  // 4. Create UTXO fees (approx 0.005)
+  const totalRequired = Number(amountRaw) + (EPHEMERAL_BUFFER) + (0.02 * LAMPORTS_PER_SOL);
+  
+  if (balanceBefore < totalRequired) {
+    console.error(`\n❌ Insufficient SOL. Agent has ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(3)} SOL but needs at least ${(totalRequired / LAMPORTS_PER_SOL).toFixed(3)} SOL to create this link.`);
     process.exit(1);
   }
+
+  console.log(`\nSender wallet: ${senderAddress}`);
+  console.log(`Amount:        ${amountArg} ${token}`);
+  console.log(`Network:       ${network}`);
 
   const assetProvider = makeNodeZkAssetProvider();
 
@@ -220,11 +248,11 @@ function makeNodeZkAssetProvider() {
       lamports:   fundLamports,
     })
   );
-  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("confirmed");
   fundTx.recentBlockhash = blockhash;
   fundTx.feePayer = new PublicKey(senderAddress);
 
-  // Sign with raw keypair (no wallet adapter needed)
+  // Sign with raw keypair
   const senderKeypair = Keypair.fromSecretKey(senderSecret);
   fundTx.sign(senderKeypair);
   const fundSig = await connection.sendRawTransaction(fundTx.serialize(), { skipPreflight: true });
@@ -234,13 +262,14 @@ function makeNodeZkAssetProvider() {
   // ── Step 3: Register ephemeral + sender with Umbra ─────────────────────────
   console.log("\n[3/4] Registering privacy channels (ZK proofs)…");
 
+  const forwarder = makeAgentForwarder(connection);
+
   // Register ephemeral
   const ephClient = await getUmbraClient(
     { signer: ephemeralSigner, network, rpcUrl: RPC,
-      rpcSubscriptionsUrl: RPC.replace("https://", "wss://"),
+      rpcSubscriptionsUrl: RPC.replace("http", "ws"),
       indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
-    { transactionForwarder: getPollingTransactionForwarder({ rpcUrl: RPC }),
-      computationMonitor:   getPollingComputationMonitor({ rpcUrl: RPC }) }
+    { transactionForwarder: forwarder }
   );
 
   const ephQuerier = getUserAccountQuerierFunction({ client: ephClient });
@@ -260,10 +289,9 @@ function makeNodeZkAssetProvider() {
   // Register sender (if first time)
   const senderClient = await getUmbraClient(
     { signer: senderSigner, network, rpcUrl: RPC,
-      rpcSubscriptionsUrl: RPC.replace("https://", "wss://"),
+      rpcSubscriptionsUrl: RPC.replace("http", "ws"),
       indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
-    { transactionForwarder: getPollingTransactionForwarder({ rpcUrl: RPC }),
-      computationMonitor:   getPollingComputationMonitor({ rpcUrl: RPC }) }
+    { transactionForwarder: forwarder }
   );
 
   const senderQuerier = getUserAccountQuerierFunction({ client: senderClient });
@@ -273,26 +301,16 @@ function makeNodeZkAssetProvider() {
       !senderState.data.isUserAccountX25519KeyRegistered) {
     process.stdout.write("      Registering sender (first time only)… ");
     const senderRegProver = getUserRegistrationProver({ assetProvider });
-    const senderRegister  = getUserRegistrationFunction(
-      { client: senderClient },
-      {
-        zkProver: senderRegProver,
-        keys: {
-          userAccountX25519KeypairDeriver:
-            getUserAccountX25519KeypairDeriver({ client: senderClient }),
-          masterViewingKeyEncryptingX25519KeypairDeriver:
-            getMasterViewingKeyX25519KeypairDeriver({ client: senderClient }),
-        },
-      }
-    );
+    const senderRegister  = getUserRegistrationFunction({ client: senderClient }, { zkProver: senderRegProver });
     await senderRegister({ confidential: true, anonymous: true });
     console.log("done");
   } else {
     console.log("      Sender already registered ✓");
   }
 
-  // ── Step 4: Create receiver-claimable UTXO ────────────────────────────────
+  // ── Step 4: Create UTXO ───────────────────────────────────────────────────
   console.log("\n[4/4] Depositing into shielded pool…");
+
   const utxoProver = getCreateReceiverClaimableUtxoFromPublicBalanceProver({ assetProvider });
   const createUtxo = getPublicBalanceToReceiverClaimableUtxoCreatorFunction(
     { client: senderClient },

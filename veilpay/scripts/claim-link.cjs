@@ -110,13 +110,15 @@ function makeNodeZkAssetProvider() {
   return {
     async getAssetUrls(type, variant) {
       if (!manifest) {
-        const res = await fetch(`${CDN_BASE}/manifest.json`);
-        if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
+        const res = await fetch(`${CDN_BASE}/manifest.json`, {
+            headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" }
+        });
+        if (!res.ok) throw new Error(`ZK manifest fetch failed: ${res.status}`);
         manifest = await res.json();
       }
 
       const entry = manifest.assets[type];
-      if (!entry) throw new Error(`ZK type '${type}' not in manifest`);
+      if (!entry) throw new Error(`ZK type '${type}' not found in manifest`);
 
       let rawUrl;
       if (variant && !("url" in entry)) rawUrl = entry[variant]?.url;
@@ -147,6 +149,39 @@ function makeNodeZkAssetProvider() {
   };
 }
 
+/**
+ * Custom transaction forwarder for AI agents that skips preflight simulation.
+ * Essential for devnet reliability when sending multiple transactions in sequence.
+ */
+function makeAgentForwarder(connection) {
+  return {
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    async fireAndForget(tx) {
+      const sigs = Object.values(tx.signatures);
+      const encodeU16 = (n) => {
+        if (n < 0x80) return [n];
+        return [(n & 0x7f) | 0x80, n >> 7];
+      };
+      const countBytes = new Uint8Array(encodeU16(sigs.length));
+      const wire = new Uint8Array(countBytes.length + sigs.length * 64 + tx.messageBytes.length);
+      wire.set(countBytes, 0);
+      let off = countBytes.length;
+      for (const sig of sigs) {
+        wire.set(sig || new Uint8Array(64), off);
+        off += 64;
+      }
+      wire.set(tx.messageBytes, off);
+      return connection.sendRawTransaction(wire, { skipPreflight: true });
+    },
+    async forwardSequentially(transactions) {
+      const sigs = [];
+      for (const tx of transactions) sigs.push(await this.fireAndForget(tx));
+      return sigs;
+    },
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  };
+}
+
 // ─── Main ─────────────────────────────────────────────────────────────────────
 
 (async () => {
@@ -162,7 +197,6 @@ function makeNodeZkAssetProvider() {
     getReceiverClaimableUtxoToEncryptedBalanceClaimerFunction,
     getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction,
     pollClaimUntilTerminal,
-    getPollingTransactionForwarder, getPollingComputationMonitor,
   } = require("@umbra-privacy/sdk");
   const { getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver } = require("@umbra-privacy/web-zk-prover");
   const { ReadServiceClient } = require("@umbra-privacy/indexer-read-service-client");
@@ -177,8 +211,13 @@ function makeNodeZkAssetProvider() {
 
   // Snapshot balance BEFORE claiming so we can show the delta at the end
   const recipientPubkeyForSnapshot = new PublicKey(recipientAddr);
-  const connectionForSnapshot = new Connection(RPC, "confirmed");
-  const balanceBefore = await connectionForSnapshot.getBalance(recipientPubkeyForSnapshot, "confirmed");
+  const connection = new Connection(RPC, "confirmed");
+  const balanceBefore = await connection.getBalance(recipientPubkeyForSnapshot, "confirmed");
+
+  // Claim requires minimal SOL (just for potential ATA creation)
+  if (balanceBefore < 0.005 * LAMPORTS_PER_SOL) {
+    console.warn(`\n⚠️  Low SOL balance: ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(4)} SOL. ATA creation may fail if needed.`);
+  }
 
   console.log(`\nAgent wallet: ${recipientAddr}`);
   console.log(`Balance now:  ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
@@ -189,13 +228,11 @@ function makeNodeZkAssetProvider() {
   }
 
   // Reconstruct ephemeral signer
-  const decoded = bs58.default ? bs58.default.decode(claimSecretB58) : bs58.decode(claimSecretB58);
+  const decoded = (bs58.default || bs58).decode(claimSecretB58);
   const seed32  = decoded.length === 32 ? decoded : decoded.slice(0, 32);
   const ephKeypair  = Keypair.fromSeed(seed32);
   const ephSecret64 = ephKeypair.secretKey;
   const ephSigner   = await createSignerFromPrivateKeyBytes(ephSecret64);
-
-  const connection = new Connection(RPC, "confirmed");
 
   // Fast-path: if ephemeral SOL balance is near zero, already claimed
   const solBal = await connection.getBalance(ephKeypair.publicKey, "confirmed");
@@ -205,12 +242,12 @@ function makeNodeZkAssetProvider() {
   }
 
   // Build Umbra client for the ephemeral signer
+  const forwarder = makeAgentForwarder(connection);
   const client = await getUmbraClient(
     { signer: ephSigner, network, rpcUrl: RPC,
-      rpcSubscriptionsUrl: RPC.replace("https://", "wss://"),
+      rpcSubscriptionsUrl: RPC.replace("http", "ws"),
       indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
-    { transactionForwarder: getPollingTransactionForwarder({ rpcUrl: RPC }),
-      computationMonitor: getPollingComputationMonitor({ rpcUrl: RPC }) }
+    { transactionForwarder: forwarder }
   );
 
   // ── Scan for UTXO ──────────────────────────────────────────────────────────
@@ -223,8 +260,7 @@ function makeNodeZkAssetProvider() {
 
   let utxo = null;
   if (stats.latest_absolute_index !== null) {
-    // Cast to BigInt explicitly — the indexer returns a Number, MAX_LEAVES is BigInt,
-    // and JS throws "Cannot mix BigInt and other types" on mixed arithmetic.
+    // Cast to BigInt explicitly
     const cur     = BigInt(stats.latest_absolute_index) / MAX_LEAVES;
     const indices = cur > 0n ? [cur, cur - 1n] : [0n];
     for (const idx of indices) {
@@ -277,12 +313,9 @@ function makeNodeZkAssetProvider() {
     }
     console.log("    Verified ✓                    ");
 
-    // Poll for the encrypted balance to appear — the Umbra indexer takes 5-15s
-    // to process the claim block even after on-chain verification.
-    // A hardcoded sleep is unreliable; poll until the balance is non-zero.
     process.stdout.write("    Waiting for indexer sync");
     const POLL_INTERVAL_MS = 3_000;
-    const MAX_POLL_ATTEMPTS = 10; // up to 30 seconds
+    const MAX_POLL_ATTEMPTS = 10;
     let indexerSynced = false;
     for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
       await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
@@ -347,14 +380,13 @@ function makeNodeZkAssetProvider() {
   let tokenBalance = 0n;
 
   if (token !== "SOL") {
-    // Poll for tokens to arrive in ephemeral ATA
     for (let i = 0; i < 30; i++) {
       try {
         const info = await connection.getTokenAccountBalance(ephAta, "confirmed");
         tokenBalance = BigInt(info.value.amount);
         if (tokenBalance > 0n) break;
-      } catch { /* ATA not yet funded */ }
-      await new Promise((r) => setTimeout(r, 3000));
+      } catch { }
+      await new Promise(r => setTimeout(r, 3000));
     }
 
     if (tokenBalance > 0n) {
@@ -367,7 +399,6 @@ function makeNodeZkAssetProvider() {
     }
   }
 
-  // Sweep remaining SOL (wait for increase if SOL link)
   let currentSol = await connection.getBalance(ephKeypair.publicKey, "confirmed");
   if (token === "SOL") {
     for (let i = 0; i < 20; i++) {
@@ -381,17 +412,11 @@ function makeNodeZkAssetProvider() {
   sweepTx.recentBlockhash = blockhash;
   sweepTx.feePayer = ephKeypair.publicKey;
 
-  // Estimate fee with a dummy transfer
   sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: 1000 }));
   const feeCalc = await connection.getFeeForMessage(sweepTx.compileMessage(), "confirmed");
   const fee = BigInt(feeCalc.value || 5000);
-  sweepTx.instructions.pop(); // remove dummy
+  sweepTx.instructions.pop();
 
-  // Safety margin: subtract an extra 10,000 lamports beyond the estimated fee.
-  // The on-chain balance may not have fully settled when getBalance() is called —
-  // a hairline shortfall causes "Insufficient funds" in the simulation.
-  // skipPreflight: true on sendAndConfirmTransaction (below) skips simulation,
-  // but the margin prevents the validator from rejecting the tx too.
   const SWEEP_SAFETY_LAMPORTS = 10_000n;
   const availableSol = BigInt(currentSol) - fee - SWEEP_SAFETY_LAMPORTS;
   if (availableSol > 0n) {
@@ -410,7 +435,6 @@ function makeNodeZkAssetProvider() {
   const sig   = withdrawResult?.callbackSignature?.toString() ?? withdrawResult?.queueSignature?.toString() ?? "";
   const human = (Number(originalAmountRaw) / 10 ** tokenCfg.decimals).toFixed(tokenCfg.decimals === 6 ? 2 : 4);
 
-  // Balance after — allow a few seconds for the sweep to land
   await new Promise(r => setTimeout(r, 4000));
   const balanceAfter  = await connection.getBalance(new PublicKey(recipientAddr), "confirmed");
   const deltaLamports = balanceAfter - balanceBefore;
