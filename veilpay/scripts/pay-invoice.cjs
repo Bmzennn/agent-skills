@@ -11,7 +11,7 @@
  * optionalData, committing to the specific invoice being paid.
  *
  * Usage:
- *   node pay-invoice.cjs '<invoice_json>' [--network devnet|mainnet]
+ *   node pay-invoice.cjs '<invoice_json>' [--network devnet|mainnet] [--no-wait]
  *
  * Invoice JSON (from a 402 response body):
  *   { "amount": 0.1, "token": "SOL", "destination": "<pubkey>", "invoiceId": "<hex>" }
@@ -57,10 +57,12 @@ global.fetch = async (input, init) => {
 const args       = process.argv.slice(2);
 const invoiceArg = args.find((a) => !a.startsWith("--"));
 const get        = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
+const has        = (f) => args.includes(f);
 
 const network    = get("--network") || process.env.VEILPAY_NETWORK || "mainnet";
 const walletPath = get("--wallet") || process.env.VEILPAY_WALLET_PATH
   || path.join(os.homedir(), ".veilpay", "wallet.json");
+const noWait     = has("--no-wait");
 
 if (!invoiceArg) {
   console.error('Usage: node pay-invoice.cjs \'{"amount":0.1,"token":"SOL","destination":"...","invoiceId":"..."}\' [--network devnet|mainnet]');
@@ -323,9 +325,16 @@ function makeAgentForwarder(connection) {
 
   console.log("✅ Shielded UTXO created!");
   console.log(`\nAUTHORIZATION: ${authValue}`);
-  console.log("\nRetry your request with:");
-  console.log(`  -H "Authorization: ${authValue}"`);
-  console.log("\n⏳ Wait 10–15 seconds before retrying — indexer sync window.");
+
+  if (!noWait) {
+    console.log("\n⏳ Waiting 15 seconds for indexer sync (mandatory for server verification)…");
+    await new Promise(r => setTimeout(r, 15000));
+    console.log("✅ Ready! Use the header below for your request.");
+  } else {
+    console.log("\n⏳ Skip-wait enabled. Ensure 10-15s passes before retrying.");
+  }
+
+  console.log(`\n  -H "Authorization: ${authValue}"`);
 
   if (process.env.DEBUG) {
     console.log("\n[DEBUG] Proof tx:  ", proofTxSig);
