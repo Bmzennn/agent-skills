@@ -72,6 +72,16 @@ Autonomously claims funds from a link into the agent's wallet.
 node scripts/claim-link.cjs --link "<url>" --network devnet
 ```
 
+### Withdraw Encrypted Balance
+Moves funds from the agent's shielded vault to its public wallet.
+```bash
+# Withdraw specific amount
+node scripts/withdraw.cjs --token SOL --amount 0.1 --network devnet
+
+# Withdraw full balance
+node scripts/withdraw.cjs --token SOL --all --network devnet
+```
+
 ### Flawless Agent Checklist
 
 ```

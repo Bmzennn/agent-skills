@@ -6,8 +6,8 @@
  * Umbra encrypted balance. This script moves them to the public wallet.
  *
  * Usage:
- *   node withdraw.cjs --token <SOL|USDC> [--network devnet|mainnet]
- *   node withdraw.cjs --all [--network devnet|mainnet]   ← withdraw all tokens with balance
+ *   node withdraw.cjs --token <SOL|USDC> --amount <number> [--network devnet|mainnet]
+ *   node withdraw.cjs --token <SOL|USDC> --all [--network devnet|mainnet]  ← full balance
  */
 
 "use strict";
@@ -21,15 +21,21 @@ const get  = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : n
 const has  = (f) => args.includes(f);
 
 const tokenArg   = get("--token");
+const amountArg  = get("--amount");
 const withdrawAll = has("--all");
 const network    = get("--network") || process.env.VEILPAY_NETWORK || "mainnet";
 const walletPath = get("--wallet") || process.env.VEILPAY_WALLET_PATH
   || path.join(os.homedir(), ".veilpay", "wallet.json");
 
-if (!tokenArg && !withdrawAll) {
+if (!tokenArg) {
   console.error("Usage:");
-  console.error("  node withdraw.cjs --token <SOL|USDC|USDT>   withdraw a specific token");
-  console.error("  node withdraw.cjs --all                      withdraw all tokens with balance");
+  console.error("  node withdraw.cjs --token <SOL|USDC|USDT> --amount <number>   withdraw specific amount");
+  console.error("  node withdraw.cjs --token <SOL|USDC|USDT> --all              withdraw full balance");
+  process.exit(1);
+}
+
+if (!amountArg && !withdrawAll) {
+  console.error("❌ Error: specify --amount <number> or use --all for full balance.");
   process.exit(1);
 }
 
@@ -39,7 +45,8 @@ const TOKEN_CONFIG = {
   USDT: { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 },
 };
 
-if (tokenArg && !TOKEN_CONFIG[tokenArg.toUpperCase()]) {
+const symbol = tokenArg.toUpperCase();
+if (!TOKEN_CONFIG[symbol]) {
   console.error(`Unsupported token: ${tokenArg}. Use SOL, USDC, or USDT.`);
   process.exit(1);
 }
@@ -85,66 +92,64 @@ const SOLANA_NETWORK_SUFFIX = network === "mainnet" ? "" : `?cluster=${network}`
   const querier  = getEncryptedBalanceQuerierFunction({ client });
   const withdraw = getEncryptedBalanceToPublicBalanceDirectWithdrawerFunction({ client });
 
-  // Determine which tokens to withdraw
-  const tokensToCheck = withdrawAll
-    ? Object.keys(TOKEN_CONFIG)
-    : [tokenArg.toUpperCase()];
+  const cfg    = TOKEN_CONFIG[symbol];
+  const balMap = await querier([cfg.mint]);
+  const result = balMap.get(cfg.mint);
 
-  const mints   = tokensToCheck.map((t) => TOKEN_CONFIG[t].mint);
-  const balMap  = await querier(mints);
+  if (!result || result.state !== "shared") {
+    console.log(`\n${symbol}: no encrypted balance found.`);
+    process.exit(0);
+  }
 
-  let withdrew = 0;
+  const availableRaw = BigInt(result.balance.toString());
+  if (availableRaw === 0n) {
+    console.log(`\n${symbol}: balance is 0`);
+    process.exit(0);
+  }
 
-  for (const symbol of tokensToCheck) {
-    const cfg    = TOKEN_CONFIG[symbol];
-    const result = balMap.get(cfg.mint);
-
-    if (!result || result.state !== "shared") {
-      console.log(`\n${symbol}: no encrypted balance`);
-      continue;
+  let withdrawRaw;
+  if (withdrawAll) {
+    withdrawRaw = availableRaw;
+  } else {
+    withdrawRaw = BigInt(Math.round(parseFloat(amountArg) * 10 ** cfg.decimals));
+    if (withdrawRaw > availableRaw) {
+      const availHuman = (Number(availableRaw) / 10 ** cfg.decimals).toFixed(cfg.decimals === 6 ? 2 : 6);
+      console.error(`❌ Error: Insufficient shielded balance. Requested ${amountArg}, but only ${availHuman} is available.`);
+      process.exit(1);
     }
+  }
 
-    const raw = BigInt(result.balance.toString());
-    if (raw === 0n) {
-      console.log(`\n${symbol}: balance is 0`);
-      continue;
-    }
+  const human = (Number(withdrawRaw) / 10 ** cfg.decimals).toFixed(cfg.decimals === 6 ? 2 : 6);
+  console.log(`\nWithdrawing ${human} ${symbol} to public wallet…`);
 
-    const human = (Number(raw) / 10 ** cfg.decimals).toFixed(cfg.decimals === 6 ? 2 : 6);
-    console.log(`\nWithdrawing ${human} ${symbol}…`);
-
-    let lastErr;
-    for (let attempt = 1; attempt <= 3; attempt++) {
-      try {
-        const sig = await withdraw(signer.address, cfg.mint, raw);
-        const sigStr = typeof sig === "string" ? sig : String(sig);
-        console.log(`✅ ${human} ${symbol} withdrawn to public wallet`);
-        if (sigStr && sigStr.length > 10) {
-          console.log(`   Explorer: https://solscan.io/tx/${sigStr}${SOLANA_NETWORK_SUFFIX}`);
-        }
-        withdrew++;
-        lastErr = null;
-        break;
-      } catch (e) {
-        lastErr = e;
-        const msg = e.message.toLowerCase();
-        const retryable = msg.includes("timeout") || msg.includes("blockhash") || msg.includes("expired");
-        if (attempt < 3 && retryable) {
-          console.log(`   Attempt ${attempt} failed, retrying…`);
-          await new Promise((r) => setTimeout(r, 2000));
-        } else break;
+  let lastErr;
+  for (let attempt = 1; attempt <= 3; attempt++) {
+    try {
+      const sig = await withdraw(signer.address, cfg.mint, withdrawRaw);
+      const sigStr = typeof sig === "string" ? sig : String(sig);
+      console.log(`✅ ${human} ${symbol} withdrawn successfully.`);
+      if (sigStr && sigStr.length > 10) {
+        console.log(`   Explorer: https://solscan.io/tx/${sigStr}${SOLANA_NETWORK_SUFFIX}`);
       }
-    }
-
-    if (lastErr) {
-      console.error(`❌ Failed to withdraw ${symbol}: ${lastErr.message}`);
+      lastErr = null;
+      break;
+    } catch (e) {
+      lastErr = e;
+      const msg = e.message.toLowerCase();
+      const retryable = msg.includes("timeout") || msg.includes("blockhash") || msg.includes("expired");
+      if (attempt < 3 && retryable) {
+        console.log(`   Attempt ${attempt} failed, retrying…`);
+        await new Promise((r) => setTimeout(r, 2000));
+      } else break;
     }
   }
 
-  if (withdrew === 0) {
-    console.log("\nNo balances to withdraw.");
-    console.log("Check your balance with: node balance.cjs");
+  if (lastErr) {
+    console.error(`❌ Failed to withdraw ${symbol}: ${lastErr.message}`);
+    process.exit(1);
   }
+
+  process.exit(0);
 })().catch((e) => {
   console.error("\n❌ Withdraw failed:", e.message);
   if (process.env.DEBUG) console.error(e);
