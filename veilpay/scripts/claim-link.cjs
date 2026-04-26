@@ -213,7 +213,9 @@ function makeNodeZkAssetProvider() {
 
   let utxo = null;
   if (stats.latest_absolute_index !== null) {
-    const cur     = stats.latest_absolute_index / MAX_LEAVES;
+    // Cast to BigInt explicitly — the indexer returns a Number, MAX_LEAVES is BigInt,
+    // and JS throws "Cannot mix BigInt and other types" on mixed arithmetic.
+    const cur     = BigInt(stats.latest_absolute_index) / MAX_LEAVES;
     const indices = cur > 0n ? [cur, cur - 1n] : [0n];
     for (const idx of indices) {
       const result = await scanner(idx, 0n);
@@ -265,10 +267,24 @@ function makeNodeZkAssetProvider() {
     }
     console.log("    Verified ✓                    ");
 
-    // Give RPC time to propagate the claim state
-    process.stdout.write("    Waiting for RPC sync… ");
-    await new Promise((r) => setTimeout(r, 10_000));
-    console.log("done");
+    // Poll for the encrypted balance to appear — the Umbra indexer takes 5-15s
+    // to process the claim block even after on-chain verification.
+    // A hardcoded sleep is unreliable; poll until the balance is non-zero.
+    process.stdout.write("    Waiting for indexer sync");
+    const POLL_INTERVAL_MS = 3_000;
+    const MAX_POLL_ATTEMPTS = 10; // up to 30 seconds
+    let indexerSynced = false;
+    for (let i = 0; i < MAX_POLL_ATTEMPTS; i++) {
+      await new Promise((r) => setTimeout(r, POLL_INTERVAL_MS));
+      process.stdout.write(".");
+      const pollMap = await querier([mintAddr]);
+      const pollBal = pollMap.get(mintAddr);
+      if (pollBal?.state === "shared" && BigInt(pollBal.balance.toString()) > 0n) {
+        indexerSynced = true;
+        break;
+      }
+    }
+    console.log(indexerSynced ? " synced ✓" : " timed out (proceeding anyway)");
   } else {
     console.log("\n[2-3/5] Resuming from encrypted balance (ZK claim already complete)…");
     if (existing?.state === "shared") {
@@ -361,7 +377,13 @@ function makeNodeZkAssetProvider() {
   const fee = BigInt(feeCalc.value || 5000);
   sweepTx.instructions.pop(); // remove dummy
 
-  const availableSol = BigInt(currentSol) - fee;
+  // Safety margin: subtract an extra 10,000 lamports beyond the estimated fee.
+  // The on-chain balance may not have fully settled when getBalance() is called —
+  // a hairline shortfall causes "Insufficient funds" in the simulation.
+  // skipPreflight: true on sendAndConfirmTransaction (below) skips simulation,
+  // but the margin prevents the validator from rejecting the tx too.
+  const SWEEP_SAFETY_LAMPORTS = 10_000n;
+  const availableSol = BigInt(currentSol) - fee - SWEEP_SAFETY_LAMPORTS;
   if (availableSol > 0n) {
     sweepTx.add(SystemProgram.transfer({
       fromPubkey: ephKeypair.publicKey,
