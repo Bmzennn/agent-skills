@@ -70,6 +70,10 @@ const TOKEN_CONFIG = {
         console.log(`  ${symbol.padEnd(6)} ${human}  ← withdraw with: node withdraw.cjs --token ${symbol}`);
         hasBalance = true;
       }
+    } else if (result?.state === "mxe") {
+      // MXE = Arcium MPC computation in progress — balance exists but not yet finalized
+      console.log(`  ${symbol.padEnd(6)} ⏳ pending  (Arcium MPC still processing — re-run this in a few minutes)`);
+      hasBalance = true;
     }
   }
 
