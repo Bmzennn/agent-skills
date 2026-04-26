@@ -111,9 +111,9 @@ function makeNodeZkAssetProvider() {
     async getAssetUrls(type, variant) {
       if (!manifest) {
         const res = await fetch(`${CDN_BASE}/manifest.json`, {
-            headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" }
+          headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" }
         });
-        if (!res.ok) throw new Error(`ZK manifest fetch failed: ${res.status}`);
+        if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
         manifest = await res.json();
       }
 
@@ -259,13 +259,36 @@ function makeAgentForwarder(connection) {
   const scanner     = getClaimableUtxoScannerFunction({ client });
 
   let utxo = null;
-  if (stats.latest_absolute_index !== null) {
-    // Cast to BigInt explicitly
-    const cur     = BigInt(stats.latest_absolute_index) / MAX_LEAVES;
-    const indices = cur > 0n ? [cur, cur - 1n] : [0n];
-    for (const idx of indices) {
-      const result = await scanner(idx, 0n);
-      if (result.publicReceived.length > 0) { utxo = result.publicReceived[0]; break; }
+  const maxAttempts = 15;
+  const retryDelayMs = 4000;
+
+  for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+    try {
+      if (stats.latest_absolute_index !== null) {
+        // Cast to BigInt explicitly
+        const cur     = BigInt(stats.latest_absolute_index) / MAX_LEAVES;
+        const indices = cur > 0n ? [cur, cur - 1n] : [0n];
+        for (const idx of indices) {
+          const result = await scanner(idx, 0n);
+          if (result.publicReceived.length > 0) { utxo = result.publicReceived[0]; break; }
+        }
+      }
+      if (utxo) break;
+      if (attempt < maxAttempts) {
+        process.stdout.write(".");
+        await new Promise(r => setTimeout(r, retryDelayMs));
+      }
+    } catch (e) {
+      const errMsg = e.message || String(e);
+      const isRpcError = errMsg.toLowerCase().includes("rpc error") || 
+                         errMsg.toLowerCase().includes("response format") ||
+                         errMsg.toLowerCase().includes("fetch");
+      
+      if (attempt === maxAttempts) throw e;
+      
+      const delay = isRpcError ? retryDelayMs * (1 + attempt * 0.5) : retryDelayMs;
+      process.stdout.write(` (retry ${attempt}) `);
+      await new Promise(r => setTimeout(r, delay));
     }
   }
 
@@ -279,7 +302,7 @@ function makeAgentForwarder(connection) {
   const hasEncBal = existing?.state === "shared" && BigInt(existing.balance.toString()) > 0n;
 
   if (!utxo && !hasEncBal) {
-    console.log("No unclaimed payment found. The link may have expired or already been claimed.");
+    console.log("\nNo unclaimed payment found. The link may have expired or already been claimed.");
     process.exit(0);
   }
 
@@ -288,7 +311,7 @@ function makeAgentForwarder(connection) {
   if (utxo) {
     originalAmountRaw = BigInt(utxo.amount.toString());
     const human = (Number(originalAmountRaw) / 10 ** tokenCfg.decimals).toFixed(tokenCfg.decimals === 6 ? 2 : 4);
-    console.log(`    Found: ${human} ${token}`);
+    console.log(`\n    Found: ${human} ${token}`);
 
     // ── ZK Claim via relayer ───────────────────────────────────────────────
     console.log("\n[2/5] Generating ZK proof (this takes 20–60s)…");
