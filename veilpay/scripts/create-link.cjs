@@ -1,0 +1,308 @@
+#!/usr/bin/env node
+/**
+ * create-link.cjs — Create a VeilPay private payment link from the agent's wallet.
+ *
+ * Usage:
+ *   node create-link.cjs --amount 0.5 --token SOL [options]
+ *
+ * Options:
+ *   --amount <number>     Amount to send (required)
+ *   --token <SOL|USDC>    Token to send (default: SOL)
+ *   --network <devnet|mainnet>  (default: mainnet)
+ *   --memo "<text>"       Optional message encoded in the link (max 200 chars)
+ *   --lock-to <address>   Lock claiming to a specific wallet address
+ *   --wallet <path>       Path to agent wallet (default: ~/.veilpay/wallet.json)
+ *   --expiry-days <n>     Link expiry in days (default: 7)
+ *
+ * The sender is the agent's own wallet. No browser or wallet adapter needed —
+ * the agent signs all transactions directly with its raw keypair.
+ */
+
+"use strict";
+
+const fs     = require("fs");
+const path   = require("path");
+const os     = require("os");
+const https  = require("https");
+const crypto = require("crypto");
+
+// ─── Args ─────────────────────────────────────────────────────────────────────
+
+const args = process.argv.slice(2);
+const get  = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
+const has  = (f) => args.includes(f);
+
+const amountArg   = get("--amount");
+const token       = (get("--token") || "SOL").toUpperCase();
+const network     = get("--network") || process.env.VEILPAY_NETWORK || "mainnet";
+const memo        = get("--memo");
+const lockTo      = get("--lock-to");
+const walletPath  = get("--wallet") || process.env.VEILPAY_WALLET_PATH
+  || path.join(os.homedir(), ".veilpay", "wallet.json");
+const expiryDays  = parseInt(get("--expiry-days") || "7", 10);
+
+if (!amountArg || isNaN(parseFloat(amountArg))) {
+  console.error("Usage: node create-link.cjs --amount <number> --token <SOL|USDC> [options]");
+  process.exit(1);
+}
+
+const TOKEN_CONFIG = {
+  SOL:  { mint: "So11111111111111111111111111111111111111112",  decimals: 9 },
+  USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
+  USDT: { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 },
+};
+
+if (!TOKEN_CONFIG[token]) {
+  console.error(`Unsupported token: ${token}. Use SOL, USDC, or USDT.`);
+  process.exit(1);
+}
+
+const tokenCfg    = TOKEN_CONFIG[token];
+const amountRaw   = BigInt(Math.round(parseFloat(amountArg) * 10 ** tokenCfg.decimals));
+
+const RPC = network === "mainnet"
+  ? (process.env.VEILPAY_RPC_URL || "https://api.mainnet-beta.solana.com")
+  : (process.env.VEILPAY_RPC_URL || "https://api.devnet.solana.com");
+
+const INDEXER = network === "mainnet"
+  ? "https://utxo-indexer.api.umbraprivacy.com"
+  : "https://utxo-indexer.api-devnet.umbraprivacy.com";
+
+const CDN_BASE  = "https://d3j9fjdkre529f.cloudfront.net";
+const ZK_CACHE  = path.join(os.homedir(), ".veilpay", "zk-cache");
+const SITE_BASE = "https://www.veilpayments.xyz";
+const SOLANA_NETWORK_SUFFIX = network === "mainnet" ? "" : `?cluster=${network}`;
+
+// ─── ZK Asset Provider (Node.js) ─────────────────────────────────────────────
+
+function downloadFile(url, dest) {
+  return new Promise((resolve, reject) => {
+    const tmp = dest + ".tmp";
+    const file = fs.createWriteStream(tmp);
+    https.get(url, (res) => {
+      if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
+      res.pipe(file);
+      file.on("finish", () => { file.close(); fs.renameSync(tmp, dest); resolve(); });
+      file.on("error", (e) => { try { fs.unlinkSync(tmp); } catch {} reject(e); });
+    }).on("error", reject);
+  });
+}
+
+function makeNodeZkAssetProvider() {
+  fs.mkdirSync(ZK_CACHE, { recursive: true });
+  let manifest = null;
+
+  return {
+    async getAssetUrls(type, variant) {
+      if (!manifest) {
+        const res = await fetch(`${CDN_BASE}/manifest.json`);
+        if (!res.ok) throw new Error(`Manifest fetch failed: ${res.status}`);
+        manifest = await res.json();
+      }
+
+      const entry = manifest.assets[type];
+      if (!entry) throw new Error(`ZK type '${type}' not found in manifest`);
+
+      let rawUrl = variant && !("url" in entry) ? entry[variant]?.url : entry.url;
+      if (!rawUrl) throw new Error(`No URL for '${type}'`);
+
+      const fullZkeyUrl = rawUrl.startsWith("http") ? rawUrl : `${CDN_BASE}/${rawUrl}`;
+      const fullWasmUrl = fullZkeyUrl.replace(/\.zkey$/i, ".wasm");
+
+      const key      = crypto.createHash("md5").update(fullZkeyUrl).digest("hex");
+      const zkeyPath = path.join(ZK_CACHE, `${key}.zkey`);
+      const wasmPath = path.join(ZK_CACHE, `${key}.wasm`);
+
+      if (!fs.existsSync(zkeyPath)) {
+        process.stdout.write(`  Downloading ${type}.zkey (cached after first run)… `);
+        await downloadFile(fullZkeyUrl, zkeyPath);
+        process.stdout.write("done\n");
+      }
+      if (!fs.existsSync(wasmPath)) {
+        process.stdout.write(`  Downloading ${type}.wasm… `);
+        await downloadFile(fullWasmUrl, wasmPath);
+        process.stdout.write("done\n");
+      }
+
+      return { zkeyUrl: `file://${zkeyPath}`, wasmUrl: `file://${wasmPath}` };
+    },
+  };
+}
+
+// ─── Main ─────────────────────────────────────────────────────────────────────
+
+(async () => {
+  const bs58 = require("bs58");
+  const { Connection, Keypair, PublicKey, SystemProgram, Transaction, LAMPORTS_PER_SOL } = require("@solana/web3.js");
+  const {
+    createSignerFromPrivateKeyBytes, getUmbraClient,
+    getUserRegistrationFunction, getUserAccountQuerierFunction,
+    getUserAccountX25519KeypairDeriver, getMasterViewingKeyX25519KeypairDeriver,
+    getPublicBalanceToReceiverClaimableUtxoCreatorFunction,
+    getPollingTransactionForwarder, getPollingComputationMonitor,
+  } = require("@umbra-privacy/sdk");
+  const {
+    getUserRegistrationProver,
+    getCreateReceiverClaimableUtxoFromPublicBalanceProver,
+  } = require("@umbra-privacy/web-zk-prover");
+
+  // ── Load agent wallet ──────────────────────────────────────────────────────
+  if (!fs.existsSync(walletPath)) {
+    console.error(`No wallet at ${walletPath}. Run: node wallet.cjs create`);
+    process.exit(1);
+  }
+  const walletData    = JSON.parse(fs.readFileSync(walletPath, "utf8"));
+  const senderSecret  = Buffer.from(walletData.secretKey, "base64");
+  const senderSigner  = await createSignerFromPrivateKeyBytes(senderSecret);
+  const senderAddress = senderSigner.address.toString();
+
+  console.log(`\nSender wallet: ${senderAddress}`);
+  console.log(`Sending:       ${amountArg} ${token} on ${network}`);
+  if (memo)   console.log(`Memo:          "${memo}"`);
+  if (lockTo) console.log(`Locked to:     ${lockTo}`);
+
+  // Check sender SOL balance
+  const connection   = new Connection(RPC, "confirmed");
+  const senderSolBal = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
+  const EPHEMERAL_BUFFER = 0.02 * LAMPORTS_PER_SOL; // ~0.02 SOL for ephemeral fees
+  const minRequired  = token === "SOL"
+    ? amountRaw + BigInt(Math.round(EPHEMERAL_BUFFER)) + 10_000n
+    : BigInt(Math.round(EPHEMERAL_BUFFER)) + 10_000n;
+
+  if (BigInt(senderSolBal) < minRequired) {
+    const need = Number(minRequired) / LAMPORTS_PER_SOL;
+    console.error(`\nInsufficient SOL. Need ~${need.toFixed(4)} SOL (have ${(senderSolBal / LAMPORTS_PER_SOL).toFixed(4)}).`);
+    console.error("Run: node wallet.cjs airdrop   (devnet only)");
+    process.exit(1);
+  }
+
+  const assetProvider = makeNodeZkAssetProvider();
+
+  // ── Step 1: Generate ephemeral keypair ────────────────────────────────────
+  console.log("\n[1/4] Generating ephemeral keypair…");
+  const ephemeralPrivKey = crypto.getRandomValues(new Uint8Array(32));
+  const ephemeralKeypair = Keypair.fromSeed(ephemeralPrivKey);
+  const ephemeralSigner  = await createSignerFromPrivateKeyBytes(ephemeralKeypair.secretKey);
+  console.log(`      Ephemeral: ${ephemeralSigner.address}`);
+
+  // ── Step 2: Fund ephemeral ────────────────────────────────────────────────
+  console.log("\n[2/4] Funding ephemeral for registration fees…");
+  const fundLamports = Math.round(EPHEMERAL_BUFFER);
+  const fundTx = new Transaction().add(
+    SystemProgram.transfer({
+      fromPubkey: new PublicKey(senderAddress),
+      toPubkey:   ephemeralKeypair.publicKey,
+      lamports:   fundLamports,
+    })
+  );
+  const { blockhash, lastValidBlockHeight } = await connection.getLatestBlockhash("finalized");
+  fundTx.recentBlockhash = blockhash;
+  fundTx.feePayer = new PublicKey(senderAddress);
+
+  // Sign with raw keypair (no wallet adapter needed)
+  const senderKeypair = Keypair.fromSecretKey(senderSecret);
+  fundTx.sign(senderKeypair);
+  const fundSig = await connection.sendRawTransaction(fundTx.serialize(), { skipPreflight: true });
+  await connection.confirmTransaction({ signature: fundSig, blockhash, lastValidBlockHeight }, "confirmed");
+  console.log(`      Funded ✓ (${fundLamports / LAMPORTS_PER_SOL} SOL)`);
+
+  // ── Step 3: Register ephemeral + sender with Umbra ─────────────────────────
+  console.log("\n[3/4] Registering privacy channels (ZK proofs)…");
+
+  // Register ephemeral
+  const ephClient = await getUmbraClient(
+    { signer: ephemeralSigner, network, rpcUrl: RPC,
+      rpcSubscriptionsUrl: RPC.replace("https://", "wss://"),
+      indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
+    { transactionForwarder: getPollingTransactionForwarder({ rpcUrl: RPC }),
+      computationMonitor:   getPollingComputationMonitor({ rpcUrl: RPC }) }
+  );
+
+  const ephQuerier = getUserAccountQuerierFunction({ client: ephClient });
+  const ephState   = await ephQuerier(ephemeralSigner.address);
+  if (ephState.state !== "exists" ||
+      !ephState.data.isUserCommitmentRegistered ||
+      !ephState.data.isUserAccountX25519KeyRegistered) {
+    process.stdout.write("      Registering ephemeral… ");
+    const ephRegProver   = getUserRegistrationProver({ assetProvider });
+    const ephRegister    = getUserRegistrationFunction({ client: ephClient }, { zkProver: ephRegProver });
+    await ephRegister({ confidential: true, anonymous: true });
+    console.log("done");
+  } else {
+    console.log("      Ephemeral already registered ✓");
+  }
+
+  // Register sender (if first time)
+  const senderClient = await getUmbraClient(
+    { signer: senderSigner, network, rpcUrl: RPC,
+      rpcSubscriptionsUrl: RPC.replace("https://", "wss://"),
+      indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
+    { transactionForwarder: getPollingTransactionForwarder({ rpcUrl: RPC }),
+      computationMonitor:   getPollingComputationMonitor({ rpcUrl: RPC }) }
+  );
+
+  const senderQuerier = getUserAccountQuerierFunction({ client: senderClient });
+  const senderState   = await senderQuerier(senderSigner.address);
+  if (senderState.state !== "exists" ||
+      !senderState.data.isUserCommitmentRegistered ||
+      !senderState.data.isUserAccountX25519KeyRegistered) {
+    process.stdout.write("      Registering sender (first time only)… ");
+    const senderRegProver = getUserRegistrationProver({ assetProvider });
+    const senderRegister  = getUserRegistrationFunction(
+      { client: senderClient },
+      {
+        zkProver: senderRegProver,
+        keys: {
+          userAccountX25519KeypairDeriver:
+            getUserAccountX25519KeypairDeriver({ client: senderClient }),
+          masterViewingKeyEncryptingX25519KeypairDeriver:
+            getMasterViewingKeyX25519KeypairDeriver({ client: senderClient }),
+        },
+      }
+    );
+    await senderRegister({ confidential: true, anonymous: true });
+    console.log("done");
+  } else {
+    console.log("      Sender already registered ✓");
+  }
+
+  // ── Step 4: Create receiver-claimable UTXO ────────────────────────────────
+  console.log("\n[4/4] Depositing into shielded pool…");
+  const utxoProver = getCreateReceiverClaimableUtxoFromPublicBalanceProver({ assetProvider });
+  const createUtxo = getPublicBalanceToReceiverClaimableUtxoCreatorFunction(
+    { client: senderClient },
+    { zkProver: utxoProver }
+  );
+
+  await createUtxo({
+    destinationAddress: ephemeralSigner.address,
+    mint:               tokenCfg.mint,
+    amount:             amountRaw,
+  });
+  console.log("      Deposited ✓");
+
+  // ── Build claim URL ───────────────────────────────────────────────────────
+  const secretB58    = (bs58.default || bs58).encode(ephemeralPrivKey);
+  const memoSuffix   = memo ? `:${encodeURIComponent(memo.slice(0, 200))}` : "";
+  const lockParam    = lockTo ? `&to=${encodeURIComponent(lockTo)}` : "";
+  const expiresAt    = Date.now() + expiryDays * 24 * 60 * 60 * 1000;
+  const linkId       = crypto.randomUUID();
+  const url          = `${SITE_BASE}/claim?lid=${linkId}&exp=${expiresAt}${lockParam}#${secretB58}:${token}${memoSuffix}`;
+
+  console.log("\n✅ Private link created!");
+  console.log(`\n   Link:    ${url}`);
+  console.log(`   Amount:  ${amountArg} ${token}`);
+  console.log(`   Expires: ${new Date(expiresAt).toLocaleDateString()}`);
+  if (memo)   console.log(`   Memo:    "${memo}"`);
+  if (lockTo) console.log(`   Locked:  ${lockTo}`);
+  console.log("\n   Share this link with the recipient.");
+  console.log("   The claim key (after #) is private — keep it secret until you share it.");
+
+  // Output machine-readable JSON to stdout for agent consumption
+  process.stdout.write("\n");
+  console.log(JSON.stringify({ url, linkId, amount: amountArg, token, expiresAt, lockTo, memo }, null, 2));
+})().catch((e) => {
+  console.error("\n❌ Failed to create link:", e.message);
+  if (process.env.DEBUG) console.error(e);
+  process.exit(1);
+});
