@@ -9,31 +9,86 @@ VeilPay enables fully private payments on Solana. The sender and recipient are n
 
 ---
 
-## ⚠️ Pre-Flight: Run This Before Any Script
+## ⚠️ Full Runtime Preparation — Run Before Any Script
 
-The scripts require specific Node.js packages. **Do not assume they are installed.** Always run the setup command from the skill directory first:
+Never assume the environment is ready. ZK-SNARK skills have complex peer dependencies, binary requirements, and browser-vs-Node.js conflicts that must be resolved before first execution.
+
+### Phase 1: Dependency Installation
 
 ```bash
 cd <skill-directory>
-npm install
+rm -rf node_modules          # clean slate avoids partial-install conflicts
+npm install --legacy-peer-deps
 ```
 
-The `package.json` in this skill pins exact versions — especially `bs58@4.0.1`. This is intentional. The bs58 library has a **breaking export change after v4**: older scripts expect `bs58.encode(bytes)` directly, while v5/v6 changed to a default export requiring `bs58.default.encode()`. Running `npm install` (without pinning) will silently install v6 and break the scripts with a `TypeError: bs58.encode is not a function`.
+`--legacy-peer-deps` is **required** — the Umbra ZK prover and the Umbra SDK have conflicting peer dependency requirements. Standard `npm install` fails.
 
-### Pre-flight checklist
+**`bs58` is pinned to `4.0.1` — do not upgrade it.** After v4, bs58 changed its export structure from a direct export (`bs58.encode()`) to a default export (`bs58.default.encode()`). Any higher version silently breaks every script with `TypeError: bs58.encode is not a function`.
+
+**`snarkjs` must be present** — it is a silent requirement for local ZK proof generation. It is in `package.json` but easy to miss if you install manually.
+
+### Phase 2: Smoke Test
+
+Verify all three critical runtime dependencies before running any command:
+
+```bash
+node -e "require('snarkjs'); require('bs58'); console.log('Runtime Ready')"
+```
+
+If this prints `Runtime Ready`, the environment is good. If it throws, run Phase 1 again.
+
+Full smoke test:
+
+```bash
+node scripts/wallet.cjs show
+```
+
+If this returns an address, everything is working. If it throws `Cannot find module`, re-run Phase 1. If `bs58.encode is not a function`, check the installed version: `node -e "console.log(require('bs58/package.json').version)"` — must be `4.0.1`.
+
+### Phase 3: Legacy Key Detection (Base58 → Base64 Migration)
+
+Old versions of this skill stored secret keys in **base58**. The current scripts read keys as **base64**. `wallet.cjs` auto-detects and migrates old keys when you run `show` or `balance` — but if you see a key-related error in any other script, run this first:
+
+```bash
+node scripts/wallet.cjs show   # triggers auto-migration if needed
+```
+
+If `wallet.json` was written by an older version, the `secretKey` field will be longer than 88 characters or won't decode cleanly as base64. Running `show` will print `ℹ️ Migrated wallet key format from bs58 → base64` and fix it automatically.
+
+### Phase 4: Known Runtime Conflicts (Browser SDK in Node.js)
+
+The VeilPay SDK was built for browsers. Two conflicts arise in Node.js that the scripts already patch internally:
+
+**1. `file://` URL support** — The ZK prover downloads circuit files to `~/.veilpay/zk-cache/` then fetches them via `file://` paths. Node.js native fetch (Undici) cannot read `file://` URLs. All scripts that generate ZK proofs (`create-link.cjs`, `claim-link.cjs`, `pay-invoice.cjs`) patch `global.fetch` at startup to intercept `file://` calls and serve them from disk.
+
+**2. CDN User-Agent** — CloudFront returns HTTP 403 on headless/bot requests. All download functions inject `User-Agent: Mozilla/5.0` into CDN requests.
+
+**These patches are already in the scripts.** If you see HTTP 403 from the CDN or errors about `file://` URLs, the script version is outdated — re-sync from the source repo.
+
+### Flawless Agent Checklist
 
 ```
-1. cd into the skill directory (where package.json lives)
-2. Run: npm install
-3. Verify: node -e "const b=require('bs58'); console.log(typeof b.encode)"
-   → should print "function" (not "undefined")
-4. Run your command
-5. Verify output with: node scripts/wallet.cjs show
+□ Is snarkjs installed?           node -e "require('snarkjs')"
+□ Is bs58 version 4.0.1?          node -e "console.log(require('bs58/package.json').version)"
+□ Is wallet.json in base64?       node scripts/wallet.cjs show
+□ Is SOL balance ≥ 0.05?          node scripts/wallet.cjs balance
+□ Are file:// and CDN patches in? Check top of the .cjs script for global.fetch patch
 ```
 
-### Diagnostic: if a script fails with `Cannot find module`
+### Balance Check Before Link Creation
 
-Read the `require()` statements at the top of the script, then install only those packages. Use `npm install bs58@4.0.1` — never just `npm install bs58` (gets v6).
+Always verify the agent has enough SOL before attempting link creation. Creating a private link costs ~0.02 SOL in ephemeral registration fees plus the transfer amount itself.
+
+```bash
+node scripts/wallet.cjs balance --network devnet
+# Balance must be ≥ 0.02 + transfer amount
+```
+
+### Suppress Ed25519 Experimental Warnings
+
+```bash
+NODE_NO_WARNINGS=1 node scripts/create-link.cjs --amount 0.5 --token SOL
+```
 
 ---
 

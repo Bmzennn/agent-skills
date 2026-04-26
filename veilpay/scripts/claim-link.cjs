@@ -11,11 +11,29 @@
 
 "use strict";
 
-const fs   = require("fs");
-const path = require("path");
-const os   = require("os");
-const https = require("https");
+const fs     = require("fs");
+const path   = require("path");
+const os     = require("os");
+const https  = require("https");
 const crypto = require("crypto");
+const urlMod = require("url");
+
+// ─── Runtime patches ─────────────────────────────────────────────────────────
+const _nativeFetch = global.fetch;
+global.fetch = async (input, init) => {
+  const inputUrl = typeof input === "string" ? input : input?.url;
+  if (inputUrl?.startsWith("file://")) {
+    const filePath = urlMod.fileURLToPath(inputUrl);
+    const buffer   = fs.readFileSync(filePath);
+    return {
+      ok: true, status: 200,
+      arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      json:        async () => JSON.parse(buffer.toString()),
+      blob:        async () => new Blob([buffer]),
+    };
+  }
+  return _nativeFetch(input, init);
+};
 
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
@@ -75,7 +93,8 @@ function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const tmp = dest + ".tmp";
     const file = fs.createWriteStream(tmp);
-    https.get(url, (res) => {
+    const opts = { headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" } };
+    https.get(url, opts, (res) => {
       if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode} for ${url}`)); return; }
       res.pipe(file);
       file.on("finish", () => { file.close(); fs.renameSync(tmp, dest); resolve(); });

@@ -29,6 +29,34 @@ function ensureDir() {
   fs.mkdirSync(path.dirname(WALLET_FILE), { recursive: true });
 }
 
+// ─── Legacy key migration ─────────────────────────────────────────────────────
+// Old versions stored secretKey as bs58. New scripts read it as base64.
+// This runs automatically before any command that reads the wallet.
+function migrateIfNeeded() {
+  if (!fs.existsSync(WALLET_FILE)) return;
+  const data = JSON.parse(fs.readFileSync(WALLET_FILE, "utf8"));
+  if (!data.secretKey) return;
+
+  // Base64 is always 88 chars for a 64-byte key; bs58 is ~87 but looks different.
+  // Reliable test: try decoding as base64 and check the resulting length.
+  const b64Bytes = Buffer.from(data.secretKey, "base64");
+  if (b64Bytes.length === 64) return; // already base64
+
+  // Looks like bs58 — migrate it
+  const bs58 = require("bs58");
+  const b58  = bs58.default || bs58;
+  try {
+    const decoded = b58.decode(data.secretKey);
+    data.secretKey = Buffer.from(decoded).toString("base64");
+    // Ensure publicKey field is consistent
+    if (!data.publicKey && data.address) { data.publicKey = data.address; delete data.address; }
+    fs.writeFileSync(WALLET_FILE, JSON.stringify(data, null, 2));
+    console.log("ℹ️  Migrated wallet key format from bs58 → base64 (one-time upgrade).");
+  } catch {
+    // Not bs58 either — leave it alone
+  }
+}
+
 function createWallet() {
   ensureDir();
   if (fs.existsSync(WALLET_FILE)) {
@@ -49,6 +77,7 @@ function createWallet() {
 }
 
 function showWallet() {
+  migrateIfNeeded();
   if (!fs.existsSync(WALLET_FILE)) {
     console.error(`No wallet at ${WALLET_FILE}. Run: node wallet.cjs create`);
     process.exit(1);
@@ -58,6 +87,7 @@ function showWallet() {
 }
 
 async function checkBalance() {
+  migrateIfNeeded();
   if (!fs.existsSync(WALLET_FILE)) {
     console.error(`No wallet at ${WALLET_FILE}. Run: node wallet.cjs create`);
     process.exit(1);

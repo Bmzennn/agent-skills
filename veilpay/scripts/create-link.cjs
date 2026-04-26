@@ -25,6 +25,27 @@ const path   = require("path");
 const os     = require("os");
 const https  = require("https");
 const crypto = require("crypto");
+const urlMod = require("url");
+
+// ─── Runtime patches ─────────────────────────────────────────────────────────
+// The ZK prover downloads circuit files to ~/.veilpay/zk-cache/ then fetches
+// them via file:// URLs. Node.js native fetch (Undici) cannot handle file://
+// — patch it here before any SDK code runs.
+const _nativeFetch = global.fetch;
+global.fetch = async (input, init) => {
+  const inputUrl = typeof input === "string" ? input : input?.url;
+  if (inputUrl?.startsWith("file://")) {
+    const filePath = urlMod.fileURLToPath(inputUrl);
+    const buffer   = fs.readFileSync(filePath);
+    return {
+      ok: true, status: 200,
+      arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      json:        async () => JSON.parse(buffer.toString()),
+      blob:        async () => new Blob([buffer]),
+    };
+  }
+  return _nativeFetch(input, init);
+};
 
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
@@ -77,10 +98,12 @@ const SOLANA_NETWORK_SUFFIX = network === "mainnet" ? "" : `?cluster=${network}`
 
 function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
-    const tmp = dest + ".tmp";
+    const tmp  = dest + ".tmp";
     const file = fs.createWriteStream(tmp);
-    https.get(url, (res) => {
-      if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode}`)); return; }
+    // User-Agent required — CloudFront returns HTTP 403 on headless/bot requests
+    const opts = { headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" } };
+    https.get(url, opts, (res) => {
+      if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode} for ${url}`)); return; }
       res.pipe(file);
       file.on("finish", () => { file.close(); fs.renameSync(tmp, dest); resolve(); });
       file.on("error", (e) => { try { fs.unlinkSync(tmp); } catch {} reject(e); });

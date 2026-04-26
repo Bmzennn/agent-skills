@@ -23,10 +23,27 @@
 
 "use strict";
 
-const fs    = require("fs");
-const path  = require("path");
-const os    = require("os");
+const fs     = require("fs");
+const path   = require("path");
+const os     = require("os");
 const urlMod = require("url");
+
+// ─── Runtime patch: file:// fetch support ────────────────────────────────────
+const _nativeFetch = global.fetch;
+global.fetch = async (input, init) => {
+  const inputUrl = typeof input === "string" ? input : input?.url;
+  if (inputUrl?.startsWith("file://")) {
+    const filePath = urlMod.fileURLToPath(inputUrl);
+    const buffer   = fs.readFileSync(filePath);
+    return {
+      ok: true, status: 200,
+      arrayBuffer: async () => buffer.buffer.slice(buffer.byteOffset, buffer.byteOffset + buffer.byteLength),
+      json:        async () => JSON.parse(buffer.toString()),
+      blob:        async () => new Blob([buffer]),
+    };
+  }
+  return _nativeFetch(input, init);
+};
 
 // ─── Args ─────────────────────────────────────────────────────────────────────
 
@@ -82,7 +99,9 @@ async function secureFetch(input, init) {
     throw new Error(`Security: only HTTPS URLs allowed (got: ${inputUrl})`);
   }
 
-  return global.fetch(input, init);
+  // Inject User-Agent — CloudFront CDN returns 403 on headless/bot requests
+  const headers = { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)", ...(init?.headers || {}) };
+  return global.fetch(input, { ...init, headers });
 }
 
 // ─── ZK Asset Provider ────────────────────────────────────────────────────────
