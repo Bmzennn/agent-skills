@@ -109,7 +109,11 @@ const SOLANA_NETWORK_SUFFIX = network === "mainnet" ? "" : `?cluster=${network}`
   console.log("   Recipient verified ✓");
 
   // ── Send confidential transfer ────────────────────────────────────────────
-  console.log("\nSending confidential transfer…");
+  console.log("\n⚠️  Wallet simulation warning expected");
+  console.log("   Phantom will show 'This transaction could not be simulated'.");
+  console.log("   This is normal for Arcium MPC / ZK-based confidential transfers.");
+  console.log("   The transfer succeeds regardless — click Proceed Anyway.\n");
+  console.log("Sending confidential transfer…");
   const deposit = getPublicBalanceToEncryptedBalanceDirectDepositorFunction({ client });
   const res = await deposit(toAddr, tokenCfg.mint, amountRaw);
 
