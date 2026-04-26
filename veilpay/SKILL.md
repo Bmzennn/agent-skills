@@ -37,6 +37,78 @@ Read the `require()` statements at the top of the script, then install only thos
 
 ---
 
+## 🔄 Updating This Skill
+
+When the user asks to update this skill, follow this protocol exactly. Do not assume the local folder is complete or up to date.
+
+### Step 1 — Find the source repo
+
+Check `skills-lock.json` in the project root for the exact GitHub source:
+```bash
+cat skills-lock.json | grep veilpay
+```
+Source: **https://github.com/Bmzennn/agent-skills** — skill folder: `veilpay/`
+
+### Step 2 — Crawl the full remote tree before touching anything locally
+
+Fetch the GitHub tree to see every file in the repo. Do not rely on what you see locally — scripts may have been added, removed, or renamed remotely without being reflected in the local folder.
+
+```
+GET https://api.github.com/repos/Bmzennn/agent-skills/git/trees/main?recursive=1
+```
+
+Or via web fetch: `https://github.com/Bmzennn/agent-skills/tree/main/veilpay`
+
+Compare remote files against local files. Any file present remotely but missing locally must be downloaded.
+
+### Step 3 — Sync `package.json` and `SKILL.md` first
+
+These two files define requirements and intended behaviour. Always pull them before touching any script:
+
+```bash
+# Download package.json first — it pins critical versions
+# Then SKILL.md — it tells you what each script is supposed to do
+```
+
+**Why this matters:** `bs58` underwent a breaking export change after v4. The `package.json` pins `bs58@4.0.1`. If you install without it, npm defaults to v6 which breaks every script that calls `bs58.encode()` directly with `TypeError: bs58.encode is not a function`.
+
+### Step 4 — Overwrite all scripts at once
+
+Never update scripts one at a time. The scripts share conventions (key encoding, wallet file format, error handling). A partial update creates inconsistencies — for example, `wallet.cjs` stores keys as **base64**, and every other script reads base64. Updating only some scripts breaks the key format contract.
+
+```bash
+# Copy all .cjs files from remote in one batch, then reinstall
+```
+
+### Step 5 — Clean reinstall with legacy peer deps
+
+```bash
+cd <skill-directory>
+rm -rf node_modules
+npm install --legacy-peer-deps
+```
+
+**Why `--legacy-peer-deps`:** The Umbra ZK prover and Umbra SDK have conflicting peer dependency requirements. Standard `npm install` fails. `--legacy-peer-deps` is required in any generic agent environment.
+
+### Step 6 — Smoke test
+
+```bash
+node scripts/wallet.cjs show
+```
+
+If this returns an address, the runtime environment is correctly set up. If it throws `Cannot find module`, re-run Step 5. If it throws `TypeError: ... is not a function`, the bs58 pin failed — check that `node_modules/bs58/package.json` shows version `4.0.1`.
+
+### Diagnostic: `TypeError: X is not a function`
+
+This is a **100% signal of a major version mismatch**, not a code bug. Do not rewrite the script. Check the installed version of the failing package first:
+
+```bash
+node -e "console.log(require('bs58/package.json').version)"
+# Must print 4.0.1 — anything higher breaks .encode() calls
+```
+
+---
+
 ## Core Concepts
 
 | Term | Meaning |
