@@ -93,7 +93,30 @@ const RELAYER = network === "mainnet"
     return;
   }
 
-  // Check for unclaimed UTXO in the pool
+  // ── Gate 2: Encrypted balance ─────────────────────────────────────────────
+  // Check this BEFORE the indexer. After a ZK claim, the encrypted balance
+  // updates within seconds, but the indexer can lag 30–120s and still show
+  // the UTXO as unspent — causing a false "pending" if checked first.
+  const TOKEN_MINTS = {
+    SOL:  "So11111111111111111111111111111111111111112",
+    USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+    USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  };
+  const mint = TOKEN_MINTS[token] || TOKEN_MINTS.SOL;
+  const querier = getEncryptedBalanceQuerierFunction({ client });
+  const balMap = await querier([mint]);
+  const bal = balMap.get(mint);
+  if (bal?.state === "shared" && BigInt(bal.balance.toString()) > 0n) {
+    const decimals = token === "USDC" || token === "USDT" ? 6 : 9;
+    const human = (Number(BigInt(bal.balance.toString())) / 10 ** decimals).toFixed(decimals === 6 ? 2 : 4);
+    console.log("\nStatus: claimed");
+    console.log(`Amount: ${human} ${token || "SOL"}`);
+    console.log("ZK proof accepted — funds are in the ephemeral encrypted balance, sweep in progress.");
+    process.exit(0);
+  }
+
+  // ── Gate 3: Indexer UTXO ─────────────────────────────────────────────────
+  // Slowest source of truth — check last. Indexer lags behind on-chain state.
   const readClient = new ReadServiceClient({ endpoint: INDEXER });
   const stats = await readClient.getStats();
   const MAX_LEAVES = 1n << 20n;
@@ -101,7 +124,9 @@ const RELAYER = network === "mainnet"
   let hasUtxo = false;
   let utxoAmount = null;
   if (stats.latest_absolute_index !== null) {
-    const current = stats.latest_absolute_index / MAX_LEAVES;
+    // Cast to BigInt — indexer returns Number, MAX_LEAVES is BigInt literal.
+    // Mixed arithmetic throws: "Cannot mix BigInt and other types".
+    const current = BigInt(stats.latest_absolute_index) / MAX_LEAVES;
     const indices = current > 0n ? [current, current - 1n] : [0n];
     const scanner = getClaimableUtxoScannerFunction({ client });
     for (const idx of indices) {
@@ -115,32 +140,18 @@ const RELAYER = network === "mainnet"
   }
 
   if (hasUtxo) {
-    const decimals = token === "USDC" ? 6 : 9;
+    const decimals = token === "USDC" || token === "USDT" ? 6 : 9;
     const human = (Number(utxoAmount) / 10 ** decimals).toFixed(decimals === 6 ? 2 : 4);
     console.log("\nStatus: pending");
     console.log(`Amount: ${human} ${token || "SOL"}`);
     console.log("Funds are in the shielded pool, waiting to be claimed.");
     if (memo) console.log(`Memo: "${memo}"`);
-    return;
-  }
-
-  // Check encrypted balance (claimed but not yet swept)
-  const TOKEN_MINTS = {
-    SOL: "So11111111111111111111111111111111111111112",
-    USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  };
-  const mint = TOKEN_MINTS[token] || TOKEN_MINTS.SOL;
-  const querier = getEncryptedBalanceQuerierFunction({ client });
-  const balMap = await querier([mint]);
-  const bal = balMap.get(mint);
-  if (bal?.state === "shared" && BigInt(bal.balance.toString()) > 0n) {
-    console.log("\nStatus: claimed");
-    console.log("ZK proof accepted — funds are in the ephemeral encrypted balance, sweep in progress.");
-    return;
+    process.exit(0);
   }
 
   console.log("\nStatus: not_found");
   console.log("No payment detected. The link may have expired, already been fully claimed, or the key is incorrect.");
+  process.exit(0);
 })().catch((e) => {
   console.error("Error:", e.message);
   process.exit(1);
