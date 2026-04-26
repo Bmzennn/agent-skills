@@ -179,14 +179,16 @@ function makeNodeZkAssetProvider() {
   const senderSigner  = await createSignerFromPrivateKeyBytes(senderSecret);
   const senderAddress = senderSigner.address.toString();
 
+  // Snapshot balance BEFORE sending so we can show the delta at the end
+  const connection   = new Connection(RPC, "confirmed");
+  const balanceBefore = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
+  const senderSolBal  = balanceBefore;
+
   console.log(`\nSender wallet: ${senderAddress}`);
+  console.log(`Balance now:   ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
   console.log(`Sending:       ${amountArg} ${token} on ${network}`);
   if (memo)   console.log(`Memo:          "${memo}"`);
   if (lockTo) console.log(`Locked to:     ${lockTo}`);
-
-  // Check sender SOL balance
-  const connection   = new Connection(RPC, "confirmed");
-  const senderSolBal = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
   const EPHEMERAL_BUFFER = 0.02 * LAMPORTS_PER_SOL; // ~0.02 SOL for ephemeral fees
   const minRequired  = token === "SOL"
     ? amountRaw + BigInt(Math.round(EPHEMERAL_BUFFER)) + 10_000n
@@ -312,18 +314,32 @@ function makeNodeZkAssetProvider() {
   const linkId       = crypto.randomUUID();
   const url          = `${SITE_BASE}/claim?lid=${linkId}&exp=${expiresAt}${lockParam}#${secretB58}:${token}${memoSuffix}`;
 
+  // Balance after deposit
+  const balanceAfter   = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
+  const deltaLamports  = balanceAfter - balanceBefore;
+  const deltaSign      = deltaLamports >= 0 ? "+" : "";
+  const deltaSol       = (deltaLamports / LAMPORTS_PER_SOL).toFixed(6);
+  const afterSol       = (balanceAfter / LAMPORTS_PER_SOL).toFixed(6);
+
   console.log("\n✅ Private link created!");
   console.log(`\n   Link:    ${url}`);
   console.log(`   Amount:  ${amountArg} ${token}`);
   console.log(`   Expires: ${new Date(expiresAt).toLocaleDateString()}`);
   if (memo)   console.log(`   Memo:    "${memo}"`);
   if (lockTo) console.log(`   Locked:  ${lockTo}`);
+  console.log(`\n   Balance before: ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
+  console.log(`   Balance after:  ${afterSol} SOL  (${deltaSign}${deltaSol} SOL)`);
   console.log("\n   Share this link with the recipient.");
   console.log("   The claim key (after #) is private — keep it secret until you share it.");
 
-  // Output machine-readable JSON to stdout for agent consumption
+  // Machine-readable JSON for agent consumption
   process.stdout.write("\n");
-  console.log(JSON.stringify({ url, linkId, amount: amountArg, token, expiresAt, lockTo, memo }, null, 2));
+  console.log(JSON.stringify({
+    url, linkId, amount: amountArg, token, expiresAt, lockTo, memo,
+    balanceBefore: (balanceBefore / LAMPORTS_PER_SOL).toFixed(6),
+    balanceAfter:  afterSol,
+    balanceDelta:  `${deltaSign}${deltaSol}`,
+  }, null, 2));
 })().catch((e) => {
   console.error("\n❌ Failed to create link:", e.message);
   if (process.env.DEBUG) console.error(e);

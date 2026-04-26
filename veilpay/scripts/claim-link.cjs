@@ -174,9 +174,19 @@ function makeNodeZkAssetProvider() {
   }
   const walletData    = JSON.parse(fs.readFileSync(walletPath, "utf8"));
   const recipientAddr = walletData.publicKey;
+
+  // Snapshot balance BEFORE claiming so we can show the delta at the end
+  const recipientPubkeyForSnapshot = new PublicKey(recipientAddr);
+  const connectionForSnapshot = new Connection(RPC, "confirmed");
+  const balanceBefore = await connectionForSnapshot.getBalance(recipientPubkeyForSnapshot, "confirmed");
+
   console.log(`\nAgent wallet: ${recipientAddr}`);
+  console.log(`Balance now:  ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
   console.log(`Claiming on:  ${network}`);
-  if (memo) console.log(`Memo:         "${memo}"`);
+  if (memo) {
+    console.log(`\n💬 Message from sender:`);
+    console.log(`   "${memo}"`);
+  }
 
   // Reconstruct ephemeral signer
   const decoded = bs58.default ? bs58.default.decode(claimSecretB58) : bs58.decode(claimSecretB58);
@@ -397,13 +407,26 @@ function makeNodeZkAssetProvider() {
   }
 
   // ── Done ──────────────────────────────────────────────────────────────────
-  const sig = withdrawResult?.callbackSignature?.toString() ?? withdrawResult?.queueSignature?.toString() ?? "";
+  const sig   = withdrawResult?.callbackSignature?.toString() ?? withdrawResult?.queueSignature?.toString() ?? "";
   const human = (Number(originalAmountRaw) / 10 ** tokenCfg.decimals).toFixed(tokenCfg.decimals === 6 ? 2 : 4);
 
+  // Balance after — allow a few seconds for the sweep to land
+  await new Promise(r => setTimeout(r, 4000));
+  const balanceAfter  = await connection.getBalance(new PublicKey(recipientAddr), "confirmed");
+  const deltaLamports = balanceAfter - balanceBefore;
+  const deltaSign     = deltaLamports >= 0 ? "+" : "";
+  const deltaSol      = (deltaLamports / LAMPORTS_PER_SOL).toFixed(6);
+  const afterSol      = (balanceAfter / LAMPORTS_PER_SOL).toFixed(6);
+
   console.log("\n✅ Claimed successfully!");
-  console.log(`   Amount:    ${human} ${token}`);
+  console.log(`\n   Claimed:   ${human} ${token}`);
   console.log(`   Delivered: ${recipientAddr}`);
-  if (sig) console.log(`   Explorer:  https://solscan.io/tx/${sig}${SOLANA_NETWORK_SUFFIX}`);
+  console.log(`\n   Balance before: ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
+  console.log(`   Balance after:  ${afterSol} SOL  (${deltaSign}${deltaSol} SOL)`);
+  if (memo) {
+    console.log(`\n   💬 Memo: "${memo}"`);
+  }
+  if (sig) console.log(`\n   Explorer: https://solscan.io/tx/${sig}${SOLANA_NETWORK_SUFFIX}`);
 })().catch((e) => {
   console.error("\n❌ Claim failed:", e.message);
   if (process.env.DEBUG) console.error(e);
