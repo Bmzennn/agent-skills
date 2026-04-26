@@ -7,6 +7,36 @@ description: Make and receive private payments on Solana via VeilPay. Use when a
 
 VeilPay enables fully private payments on Solana. The sender and recipient are never linked on-chain — a Groth16 ZK proof breaks any cryptographic connection between deposit and withdrawal.
 
+---
+
+## ⚠️ Pre-Flight: Run This Before Any Script
+
+The scripts require specific Node.js packages. **Do not assume they are installed.** Always run the setup command from the skill directory first:
+
+```bash
+cd <skill-directory>
+npm install
+```
+
+The `package.json` in this skill pins exact versions — especially `bs58@4.0.1`. This is intentional. The bs58 library has a **breaking export change after v4**: older scripts expect `bs58.encode(bytes)` directly, while v5/v6 changed to a default export requiring `bs58.default.encode()`. Running `npm install` (without pinning) will silently install v6 and break the scripts with a `TypeError: bs58.encode is not a function`.
+
+### Pre-flight checklist
+
+```
+1. cd into the skill directory (where package.json lives)
+2. Run: npm install
+3. Verify: node -e "const b=require('bs58'); console.log(typeof b.encode)"
+   → should print "function" (not "undefined")
+4. Run your command
+5. Verify output with: node scripts/wallet.cjs show
+```
+
+### Diagnostic: if a script fails with `Cannot find module`
+
+Read the `require()` statements at the top of the script, then install only those packages. Use `npm install bs58@4.0.1` — never just `npm install bs58` (gets v6).
+
+---
+
 ## Core Concepts
 
 | Term | Meaning |
