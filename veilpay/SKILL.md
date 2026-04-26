@@ -200,13 +200,36 @@ Encrypted balances for 7xKt...9mPq:
 
 ### 6. Withdraw Encrypted Balance
 
-Withdraws your encrypted balance to your public wallet.
+Withdraws your encrypted balance to your public wallet. Supports a single token or `--all` to sweep everything.
 
 ```bash
-node scripts/withdraw.cjs \
-  --token USDC \
+node scripts/withdraw.cjs --token USDC --network devnet
+node scripts/withdraw.cjs --all --network devnet
+```
+
+---
+
+### 7. Pay an x402 Invoice
+
+When an API responds with HTTP 402 Payment Required, use this to fulfill the invoice with a shielded Umbra deposit and get back the Authorization header value.
+
+```bash
+# Capture the invoice from the 402 response body, then:
+node scripts/pay-invoice.cjs '{"amount":0.1,"token":"SOL","destination":"3uv9...","invoiceId":"a3f9...64hex"}' \
   --network devnet
 ```
+
+**Output:**
+```
+✅ Invoice paid.
+
+AUTHORIZATION: x402 5Kj9...:8Nm2...:a3f9...
+
+Retry your request with:
+  -H "Authorization: x402 5Kj9...:8Nm2...:a3f9..."
+```
+
+The `invoiceId` must be the exact 64-character hex string from the server's 402 response. The amount is shielded — the server sees a proof, not the raw transfer.
 
 ---
 
