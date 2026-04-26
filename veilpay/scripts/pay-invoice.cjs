@@ -271,6 +271,12 @@ function validateInvoice(data) {
   console.log(`\nAUTHORIZATION: ${authValue}`);
   console.log("\nRetry your request with:");
   console.log(`  -H "Authorization: ${authValue}"`);
+  console.log("\n⏳ Wait 10–15 seconds before retrying — the Umbra indexer needs time to");
+  console.log("   process the block and see your shielded deposit before the server can verify it.");
+
+  // Force-exit: the Umbra and Solana SDKs hold open WebSocket listeners that
+  // keep the Node.js process alive indefinitely after the payment is complete.
+  process.exit(0);
 })().catch((e) => {
   console.error("\n❌ Payment failed:", e.message);
   if (process.env.DEBUG) console.error(e);

@@ -92,6 +92,50 @@ NODE_NO_WARNINGS=1 node scripts/create-link.cjs --amount 0.5 --token SOL
 
 ---
 
+## ⏱️ Paying x402 Invoices — Timing Is Critical
+
+Shielded x402 payments have three timing constraints that cause failures if ignored.
+
+### The Three Timing Traps
+
+**1. Script hangs after payment** — Fixed in `pay-invoice.cjs`. The Umbra and Solana SDKs hold WebSocket connections open after completing. The script now calls `process.exit(0)` immediately after printing the `AUTHORIZATION` header.
+
+**2. Invoice expiry race condition** — The server issues an invoice, the agent must pay it before it expires (10 minutes on VeilPay's server). The ZK proof generation takes 20–60 seconds. If the agent pauses between fetching the invoice and running `pay-invoice.cjs`, it may expire. **Chain the operations atomically:**
+
+```bash
+# Fetch invoice, pay immediately, wait for indexer, retry — all in one shell string
+INVOICE=$(curl -s https://www.veilpayments.xyz/api/premium-data | python3 -c "import sys,json; d=json.load(sys.stdin); print(json.dumps(d['invoice']))") && \
+NODE_NO_WARNINGS=1 node scripts/pay-invoice.cjs "$INVOICE" --network devnet && \
+sleep 15 && \
+curl -H "Authorization: x402 <paste_auth_value_here>" https://www.veilpayments.xyz/api/premium-data
+```
+
+**3. Indexer lag** — Even after your transaction confirms on Solana, the Umbra indexer takes an additional 10–15 seconds to process the block. The server verifies by querying the indexer. Submit the Authorization header too early and the server returns 403. **Always wait 15 seconds** between `pay-invoice.cjs` completing and the retry request.
+
+### Flawless x402 Execution Order
+
+```
+1. node scripts/wallet.cjs balance           ← must be ≥ 0.02 SOL
+2. Fetch the 402 endpoint → capture invoice JSON
+3. Immediately pipe invoice into pay-invoice.cjs (no pauses)
+4. pay-invoice.cjs prints AUTHORIZATION and exits
+5. sleep 15                                  ← indexer sync window
+6. Retry request with Authorization header
+```
+
+### "Invoice unknown or expired" diagnosis
+
+If you see this error, the cause is one of:
+
+| Cause | Diagnosis | Fix |
+|---|---|---|
+| Supabase tables missing | Server logs show "Supabase invoice insert failed" | Run the x402 table setup SQL in Supabase |
+| Cross-instance serverless | Works locally, fails on Vercel | Tables MUST exist in Supabase — in-memory breaks across instances |
+| Indexer lag | Retried too fast after payment | Add `sleep 15` before retry |
+| Invoice genuinely expired | More than 10 minutes between fetch and pay | Chain the commands — no intermediate stops |
+
+---
+
 ## 🔄 Updating This Skill
 
 When the user asks to update this skill, follow this protocol exactly. Do not assume the local folder is complete or up to date.
