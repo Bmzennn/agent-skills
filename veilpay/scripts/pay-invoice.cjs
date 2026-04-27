@@ -10,6 +10,10 @@
  * The invoiceId (32 bytes from the 402 response) is embedded as the UTXO's
  * optionalData, committing to the specific invoice being paid.
  *
+ * DOUBLE BILLING PROTECTION:
+ * Successful payments are recorded in ~/.veilpay/payments.json.
+ * If the same invoiceId is provided again, the cached authorization header is returned.
+ *
  * Usage:
  *   node pay-invoice.cjs '<invoice_json>' [--network devnet|mainnet] [--no-wait]
  *
@@ -18,10 +22,6 @@
  *
  * Output:
  *   AUTHORIZATION: x402 <proofAccountSig>:<utxoSig>:<invoiceId>
- *
- * Key loading (priority order):
- *   1. VEILPAY_WALLET_PATH env var / ~/.veilpay/wallet.json  (base64 secretKey)
- *   2. AGENT_SECRET_KEY env var                              (base58 or base64)
  */
 
 "use strict";
@@ -34,8 +34,6 @@ const crypto = require("crypto");
 const urlMod = require("url");
 
 // ─── Runtime patch: file:// fetch for ZK circuits ────────────────────────────
-// Node.js native fetch (Undici) cannot handle file:// URIs.
-// The ZK prover downloads circuits to ~/.veilpay/zk-cache/ then loads via file://.
 const _nativeFetch = global.fetch;
 global.fetch = async (input, init) => {
   const inputUrl = typeof input === "string" ? input : input?.url;
@@ -67,6 +65,28 @@ const noWait     = has("--no-wait");
 if (!invoiceArg) {
   console.error('Usage: node pay-invoice.cjs \'{"amount":0.1,"token":"SOL","destination":"...","invoiceId":"..."}\' [--network devnet|mainnet]');
   process.exit(1);
+}
+
+// ─── Double Billing Protection Logic ──────────────────────────────────────────
+
+const PAYMENTS_LEDGER = path.join(os.homedir(), ".veilpay", "payments.json");
+
+function getPayment(invoiceId) {
+  if (!fs.existsSync(PAYMENTS_LEDGER)) return null;
+  try {
+    const ledger = JSON.parse(fs.readFileSync(PAYMENTS_LEDGER, "utf8"));
+    return ledger[invoiceId] || null;
+  } catch { return null; }
+}
+
+function savePayment(invoiceId, authValue) {
+  fs.mkdirSync(path.dirname(PAYMENTS_LEDGER), { recursive: true });
+  let ledger = {};
+  if (fs.existsSync(PAYMENTS_LEDGER)) {
+    try { ledger = JSON.parse(fs.readFileSync(PAYMENTS_LEDGER, "utf8")); } catch {}
+  }
+  ledger[invoiceId] = { authValue, timestamp: Date.now(), network };
+  fs.writeFileSync(PAYMENTS_LEDGER, JSON.stringify(ledger, null, 2));
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
@@ -125,7 +145,6 @@ function downloadFile(url, dest) {
   return new Promise((resolve, reject) => {
     const tmp  = dest + ".tmp";
     const file = fs.createWriteStream(tmp);
-    // User-Agent required — CloudFront returns 403 on headless/bot requests
     const opts = { headers: { "User-Agent": "Mozilla/5.0 (compatible; VeilPayAgent/1.0)" } };
     https.get(url, opts, (res) => {
       if (res.statusCode !== 200) { reject(new Error(`HTTP ${res.statusCode} for ${url}`)); return; }
@@ -179,22 +198,14 @@ function makeNodeZkAssetProvider() {
   };
 }
 
-/**
- * Custom transaction forwarder for AI agents that skips preflight simulation.
- * Essential for devnet reliability when sending multiple transactions in sequence.
- */
 function makeAgentForwarder(connection) {
   return {
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
     async fireAndForget(tx) {
-      // Re-encode from messageBytes + signatures to ensure exact bytes are preserved
       const sigs = Object.values(tx.signatures);
-      
       const encodeU16 = (n) => {
         if (n < 0x80) return [n];
         return [(n & 0x7f) | 0x80, n >> 7];
       };
-
       const countBytes = new Uint8Array(encodeU16(sigs.length));
       const wire = new Uint8Array(countBytes.length + sigs.length * 64 + tx.messageBytes.length);
       wire.set(countBytes, 0);
@@ -204,7 +215,6 @@ function makeAgentForwarder(connection) {
         off += 64;
       }
       wire.set(tx.messageBytes, off);
-
       return connection.sendRawTransaction(wire, { skipPreflight: true });
     },
     async forwardSequentially(transactions) {
@@ -212,7 +222,6 @@ function makeAgentForwarder(connection) {
       for (const tx of transactions) sigs.push(await this.fireAndForget(tx));
       return sigs;
     },
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
   };
 }
 
@@ -240,18 +249,27 @@ function makeAgentForwarder(connection) {
     process.exit(1);
   }
 
+  // ─── CHECK LEDGER FIRST ───
+  const existing = getPayment(invoice.invoiceId);
+  if (existing) {
+    console.log("\n⚠️ DUPLICATE PAYMENT DETECTED");
+    console.log(`An existing payment for invoice ${invoice.invoiceId} was found in the local ledger.`);
+    console.log(`Returning cached authorization header to prevent double billing.\n`);
+    console.log(`AUTHORIZATION: ${existing.authValue}`);
+    console.log(`\n  -H "Authorization: ${existing.authValue}"`);
+    process.exit(0);
+  }
+
   const decimals   = TOKEN_DECIMALS[invoice.token];
   const amountRaw  = BigInt(Math.round(invoice.amount * 10 ** decimals));
   const mint       = TOKEN_MINTS[invoice.token];
 
   if (!mint) { console.error(`No mint for token: ${invoice.token}`); process.exit(1); }
 
-  // invoiceId bytes (32 bytes from 64-char hex)
   const invoiceIdMatch = invoice.invoiceId.match(/.{1,2}/g);
   if (!invoiceIdMatch) { console.error("Invalid invoiceId hex"); process.exit(1); }
   const invoiceBytes = new Uint8Array(invoiceIdMatch.map((b) => parseInt(b, 16)));
 
-  // Load payer keypair
   const secretBytes = loadSecretKey();
   const keypair     = secretBytes.length === 64
     ? Keypair.fromSecretKey(secretBytes)
@@ -264,11 +282,10 @@ function makeAgentForwarder(connection) {
   console.log(`Invoice:     ${invoice.invoiceId.slice(0, 16)}…`);
   console.log(`Network:     ${network}`);
 
-  // Check Balance
   const connection = new Connection(RPC, "confirmed");
   const balance = await connection.getBalance(keypair.publicKey, "confirmed");
   const balanceSol = balance / LAMPORTS_PER_SOL;
-  const minRequired = invoice.amount + 0.02; // amount + buffer for fees/registration
+  const minRequired = invoice.amount + 0.02; 
   
   if (balanceSol < minRequired) {
     console.error(`\n❌ Insufficient SOL. Agent has ${balanceSol.toFixed(3)} SOL but needs at least ${minRequired.toFixed(3)} SOL.`);
@@ -279,12 +296,11 @@ function makeAgentForwarder(connection) {
 
   const client = await getUmbraClient(
     { signer, network, rpcUrl: RPC,
-      rpcSubscriptionsUrl: RPC.replace("http", "ws"),
+      rpcSubscriptionsUrl: RPC.replace("https://", "wss://").replace("http://", "ws://"),
       indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
     { transactionForwarder: makeAgentForwarder(connection) }
   );
 
-  // Register payer if first time (UTXO creation requires sender commitment on-chain)
   const querier = getUserAccountQuerierFunction({ client });
   const state   = await querier(signer.address);
   if (state.state !== "exists" ||
@@ -297,9 +313,6 @@ function makeAgentForwarder(connection) {
     console.log("done");
   }
 
-  // Create shielded UTXO for the server with invoiceId in optionalData.
-  // Two transactions: createProofAccount + createUtxo.
-  // The server's Solana address does NOT appear in either transaction.
   console.log("\nComputing ZK proof (may take 15–30s)…");
 
   const utxoProver = getCreateReceiverClaimableUtxoFromPublicBalanceProver({ assetProvider });
@@ -322,6 +335,9 @@ function makeAgentForwarder(connection) {
   }
 
   const authValue = `x402 ${proofTxSig}:${depositSig}:${invoice.invoiceId}`;
+
+  // ─── SAVE TO LEDGER ───
+  savePayment(invoice.invoiceId, authValue);
 
   console.log("✅ Shielded UTXO created!");
   console.log(`\nAUTHORIZATION: ${authValue}`);

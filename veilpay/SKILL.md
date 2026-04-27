@@ -54,6 +54,15 @@ node scripts/wallet.cjs create
 ### Perform Shielded x402 Payment
 Fulfills an x402 invoice by depositing into the Umbra Shielded Pool. 
 **Note:** Includes a mandatory 15-second wait for indexer sync.
+
+⚠️ **STRICT POLICY FOR x402 PAYMENTS:**
+1.  **ONLY** use `scripts/pay-invoice.cjs`. **NEVER** use `scripts/transfer.cjs` (confidential transfer) for x402 invoices.
+2.  **DOUBLE BILLING PROTECTION:** The script caches successful payments in `~/.veilpay/payments.json`. If you provide the same `invoiceId`, it will return the cached header without billing you again.
+3.  **ERROR HANDLING:** If a payment script fails with a technical error (RPC timeout, network issue), **DO NOT RETRY AUTOMATICALLY**.
+    - First, check `~/.veilpay/payments.json` to see if a record was created.
+    - If no record exists but you suspect funds were moved, **ASK THE USER TO CONFIRM** before retrying.
+    - If the server rejects a proof that was already paid (and is in the ledger), **DO NOT RE-PAY**. Share the transaction IDs from the ledger with the user.
+
 ```bash
 # invoice_json: The "invoice" object from a 402 response
 # --network: devnet or mainnet (default: mainnet)
