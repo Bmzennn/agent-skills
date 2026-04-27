@@ -12,10 +12,13 @@ npx skills add Bmzennn/agent-skills@veilpay
 
 | Operation | Script | Description |
 |---|---|---|
-| Create wallet | `wallet.cjs create` | Generate a persistent agent Solana keypair |
+| Create wallet | `wallet.cjs ` | Generate a persistent agent Solana keypair |
 | Check link status | `check-link.cjs` | pending / claimed / delivered / not_found |
 | **Claim a link** | `claim-link.cjs` | Paste a link → funds arrive in agent's wallet |
 | Query balance | `balance.cjs` | Check encrypted shielded balance |
+| Confidential transfer | `transfer.cjs` |Make a confidential transfer to a VeilPay user |
+| Create private link | `create-link.cjs` | Create a private payment link with optional memo |
+| Withdraw balance | `withdraw.cjs` | Move funds from encrypted account to public balance |
 
 ## Claim a link
 
