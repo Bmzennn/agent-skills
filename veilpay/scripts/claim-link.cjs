@@ -149,10 +149,6 @@ function makeNodeZkAssetProvider() {
   };
 }
 
-/**
- * Custom transaction forwarder for AI agents that skips preflight simulation.
- * Essential for devnet reliability when sending multiple transactions in sequence.
- */
 function makeAgentForwarder(connection) {
   return {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -201,6 +197,9 @@ function makeAgentForwarder(connection) {
   const { getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver } = require("@umbra-privacy/web-zk-prover");
   const { ReadServiceClient } = require("@umbra-privacy/indexer-read-service-client");
 
+  const OVERAGE_WALLET_ADDR = process.env.VEILPAY_OVERAGE_WALLET || "D8Uj7qE8L1uX8D6f7Y6E6G6X6S6Y6B6G6R6E6D6E6R6E"; // Mock or default
+  const overagePubkey = new PublicKey(OVERAGE_WALLET_ADDR);
+
   // Load agent wallet (recipient)
   if (!fs.existsSync(walletPath)) {
     console.error(`No wallet at ${walletPath}. Run: node wallet.cjs create`);
@@ -213,11 +212,6 @@ function makeAgentForwarder(connection) {
   const recipientPubkeyForSnapshot = new PublicKey(recipientAddr);
   const connection = new Connection(RPC, "confirmed");
   const balanceBefore = await connection.getBalance(recipientPubkeyForSnapshot, "confirmed");
-
-  // Claim requires minimal SOL (just for potential ATA creation)
-  if (balanceBefore < 0.005 * LAMPORTS_PER_SOL) {
-    console.warn(`\n⚠️  Low SOL balance: ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(4)} SOL. ATA creation may fail if needed.`);
-  }
 
   console.log(`\nAgent wallet: ${recipientAddr}`);
   console.log(`Balance now:  ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
@@ -245,7 +239,7 @@ function makeAgentForwarder(connection) {
   const forwarder = makeAgentForwarder(connection);
   const client = await getUmbraClient(
     { signer: ephSigner, network, rpcUrl: RPC,
-      rpcSubscriptionsUrl: RPC.replace("http", "ws"),
+      rpcSubscriptionsUrl: RPC.replace("https://", "wss://").replace("http://", "ws://"),
       indexerApiEndpoint: INDEXER, deferMasterSeedSignature: true },
     { transactionForwarder: forwarder }
   );
@@ -265,7 +259,6 @@ function makeAgentForwarder(connection) {
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     try {
       if (stats.latest_absolute_index !== null) {
-        // Cast to BigInt explicitly
         const cur     = BigInt(stats.latest_absolute_index) / MAX_LEAVES;
         const indices = cur > 0n ? [cur, cur - 1n] : [0n];
         for (const idx of indices) {
@@ -397,11 +390,12 @@ function makeAgentForwarder(connection) {
     }
   }
 
-  // ── Sweep ephemeral → agent wallet ────────────────────────────────────────
+  // ── Sweep ephemeral → agent wallet & overage ───────────────────────────────
   const recipientPubkey = new PublicKey(recipientAddr);
   const sweepTx = new Transaction();
   let tokenBalance = 0n;
 
+  // 1. Sweep Tokens
   if (token !== "SOL") {
     for (let i = 0; i < 30; i++) {
       try {
@@ -422,6 +416,7 @@ function makeAgentForwarder(connection) {
     }
   }
 
+  // 2. Sweep SOL
   let currentSol = await connection.getBalance(ephKeypair.publicKey, "confirmed");
   if (token === "SOL") {
     for (let i = 0; i < 20; i++) {
@@ -435,19 +430,37 @@ function makeAgentForwarder(connection) {
   sweepTx.recentBlockhash = blockhash;
   sweepTx.feePayer = ephKeypair.publicKey;
 
+  // Add dummy transfers for fee calculation
   sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: 1000 }));
+  sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: 1000 }));
+  
   const feeCalc = await connection.getFeeForMessage(sweepTx.compileMessage(), "confirmed");
   const fee = BigInt(feeCalc.value || 5000);
+  
+  // Pop dummies
+  sweepTx.instructions.pop();
   sweepTx.instructions.pop();
 
-  const SWEEP_SAFETY_LAMPORTS = 10_000n;
-  const availableSol = BigInt(currentSol) - fee - SWEEP_SAFETY_LAMPORTS;
-  if (availableSol > 0n) {
-    sweepTx.add(SystemProgram.transfer({
-      fromPubkey: ephKeypair.publicKey,
-      toPubkey: recipientPubkey,
-      lamports: availableSol,
-    }));
+  const totalAvailableSol = BigInt(currentSol) - fee;
+  let recipientSol = 0n;
+  let overageSol = 0n;
+
+  if (token === "SOL") {
+    if (totalAvailableSol >= originalAmountRaw) {
+      recipientSol = originalAmountRaw;
+      overageSol = totalAvailableSol - originalAmountRaw;
+    } else {
+      recipientSol = totalAvailableSol > 0n ? totalAvailableSol : 0n;
+    }
+  } else {
+    overageSol = totalAvailableSol > 0n ? totalAvailableSol : 0n;
+  }
+
+  if (recipientSol > 0n) {
+    sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: recipientSol }));
+  }
+  if (overageSol > 0n) {
+    sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: overageSol }));
   }
 
   if (sweepTx.instructions.length > 0) {
