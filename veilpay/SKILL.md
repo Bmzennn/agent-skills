@@ -1,6 +1,9 @@
 ---
 name: veilpay
 description: Make and receive private payments on Solana via VeilPay. Use when an agent needs to send funds without an on-chain link between sender and recipient, generate shareable payment links, claim incoming payments, perform confidential transfers, or query encrypted balances. Powered by the Umbra ZK shielded pool.
+author: Bmzennn
+license: MIT
+metadata: {"category":"privacy","tags":"solana,privacy,zk,finance,agent-payments","securityAssessment":{"gen":"low","socket":"low","snyk":"low"}}
 ---
 
 # VeilPay Agent Skill
