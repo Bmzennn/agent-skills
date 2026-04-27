@@ -1,0 +1,15 @@
+{
+  "version": 1,
+  "skills": {
+    "colosseum-copilot": {
+      "source": "ColosseumOrg/colosseum-copilot",
+      "sourceType": "github",
+      "computedHash": "7859139478a5276c63a6114f0c3f9899ca4a30b5e4239825d16b92e8744e9e07"
+    },
+    "veilpay": {
+      "source": "Bmzennn/agent-skills",
+      "sourceType": "github",
+      "computedHash": "3958e583d4ec408fd11b02c8dbbf7d97e3c8d05c0a30104bc5214f4e188aa724"
+    }
+  }
+}
