@@ -1,19 +1,8 @@
 {
   "name": "veilpay-skill",
-  "version": "1.2.2",
+  "version": "1.0.0",
   "description": "VeilPay agent skill — private payments on Solana",
-  "author": "Bmzennn",
-  "license": "MIT",
-  "homepage": "https://veilpay.xyz",
-  "repository": {
-    "type": "git",
-    "url": "https://github.com/Bmzennn/agent-skills.git",
-    "directory": "veilpay"
-  },
-  "bugs": {
-    "url": "https://github.com/Bmzennn/agent-skills/issues"
-  },
-  "private": false,
+  "private": true,
   "engines": { "node": ">=18" },
   "dependencies": {
     "@solana/web3.js": "^1.98.4",
@@ -33,17 +22,12 @@
     "jsonpath": ">=1.1.1",
     "bfj": ">=7.0.3",
     "ws": "^8.18.0",
-    "cross-spawn": "^7.0.6",
-    "uuid": "^14.0.0",
-    "fast-xml-parser": "^4.4.1",
-    "micromatch": "^4.0.8",
-    "cookie": "^0.7.0"
+    "cross-spawn": "^7.0.6"
   },
   "socket": {
     "categories": {
       "protestware": "ignore",
-      "telemetry": "ignore",
-      "npm_scripts": "ignore"
+      "telemetry": "ignore"
     }
   }
 }

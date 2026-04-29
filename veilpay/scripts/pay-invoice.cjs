@@ -256,7 +256,7 @@ function makeAgentForwarder(connection) {
     console.log(`An existing payment for invoice ${invoice.invoiceId} was found in the local ledger.`);
     console.log(`Returning cached authorization header to prevent double billing.\n`);
     console.log(`AUTHORIZATION: ${existing.authValue}`);
-    console.log(`\n  -H "Authorization: ${existing.authValue}"`);
+    console.log(`\n  -H "X-402-Payment: ${existing.authValue}"`);
     process.exit(0);
   }
 
@@ -350,7 +350,7 @@ function makeAgentForwarder(connection) {
     console.log("\n⏳ Skip-wait enabled. Ensure 10-15s passes before retrying.");
   }
 
-  console.log(`\n  -H "Authorization: ${authValue}"`);
+  console.log(`\n  -H "X-402-Payment: ${authValue}"`);
 
   if (process.env.DEBUG) {
     console.log("\n[DEBUG] Proof tx:  ", proofTxSig);

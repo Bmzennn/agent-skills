@@ -87,10 +87,10 @@ const INDEXER = network === "mainnet"
 
 const CDN_BASE  = "https://d3j9fjdkre529f.cloudfront.net";
 const ZK_CACHE  = path.join(os.homedir(), ".veilpay", "zk-cache");
-const SITE_BASE = network === "mainnet" ? "https://veilpay.xyz" : "https://dev.veilpay.xyz";
+const SITE_BASE = "https://veilpayments.xyz";
 
-/** Minimum SOL to send to ephemeral account to cover registration + withdrawal fees (0.018 SOL) */
-const EPHEMERAL_BUFFER = 18_000_000;
+/** Minimum SOL to send to ephemeral account to cover registration + withdrawal fees (0.02 SOL) */
+const EPHEMERAL_BUFFER = 20_000_000;
 
 // ─── Helpers ──────────────────────────────────────────────────────────────────
 
@@ -214,7 +214,7 @@ function makeAgentForwarder(connection) {
   const balanceBefore = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
   
   // Link creation requires:
-  // 1. Funding ephemeral (0.018 SOL)
+  // 1. Funding ephemeral (0.02 SOL)
   // 2. Deposit amount
   // 3. Register sender fees (approx 0.005)
   // 4. Create UTXO fees (approx 0.005)
