@@ -79,13 +79,22 @@ function getPayment(invoiceId) {
   } catch { return null; }
 }
 
-function savePayment(invoiceId, authValue) {
+function savePayment(invoiceId, authValue, meta = {}) {
   fs.mkdirSync(path.dirname(PAYMENTS_LEDGER), { recursive: true });
   let ledger = {};
   if (fs.existsSync(PAYMENTS_LEDGER)) {
     try { ledger = JSON.parse(fs.readFileSync(PAYMENTS_LEDGER, "utf8")); } catch {}
   }
-  ledger[invoiceId] = { authValue, timestamp: Date.now(), network };
+  ledger[invoiceId] = {
+    authValue,
+    proofTxSig:  meta.proofTxSig  || null,
+    depositSig:  meta.depositSig  || null,
+    amount:      meta.amount      ?? null,
+    token:       meta.token       || null,
+    destination: meta.destination || null,
+    timestamp:   Date.now(),
+    network,
+  };
   fs.writeFileSync(PAYMENTS_LEDGER, JSON.stringify(ledger, null, 2));
 }
 
@@ -337,7 +346,13 @@ function makeAgentForwarder(connection) {
   const authValue = `x402 ${proofTxSig}:${depositSig}:${invoice.invoiceId}`;
 
   // ─── SAVE TO LEDGER ───
-  savePayment(invoice.invoiceId, authValue);
+  savePayment(invoice.invoiceId, authValue, {
+    proofTxSig:  proofTxSig,
+    depositSig:  depositSig,
+    amount:      invoice.amount,
+    token:       invoice.token,
+    destination: invoice.destination,
+  });
 
   console.log("✅ Shielded UTXO created!");
   console.log(`\nAUTHORIZATION: ${authValue}`);
