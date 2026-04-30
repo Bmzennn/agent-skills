@@ -81,6 +81,9 @@ const TOKEN_CONFIG = {
     console.log("  No encrypted balances found.");
     console.log("  Receive a confidential transfer to build a balance.");
   }
+
+  // Force exit — Umbra SDK holds WebSocket connections open indefinitely
+  process.exit(0);
 })().catch((e) => {
   console.error("Error:", e.message);
   process.exit(1);

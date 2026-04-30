@@ -358,6 +358,9 @@ function makeAgentForwarder(connection) {
     balanceAfter:  afterSol,
     balanceDelta:  `${deltaSign}${deltaSol}`,
   }, null, 2));
+
+  // Force exit — Umbra SDK holds WebSocket connections open indefinitely
+  process.exit(0);
 })().catch((e) => {
   console.error("\n❌ Failed to create link:", e.message);
   if (process.env.DEBUG) console.error(e);

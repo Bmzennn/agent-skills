@@ -487,6 +487,9 @@ function makeAgentForwarder(connection) {
     console.log(`\n   💬 Memo: "${memo}"`);
   }
   if (sig) console.log(`\n   Explorer: https://solscan.io/tx/${sig}${SOLANA_NETWORK_SUFFIX}`);
+
+  // Force exit — Umbra SDK holds WebSocket connections open indefinitely
+  process.exit(0);
 })().catch((e) => {
   console.error("\n❌ Claim failed:", e.message);
   if (process.env.DEBUG) console.error(e);
