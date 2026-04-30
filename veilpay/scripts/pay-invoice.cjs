@@ -371,6 +371,8 @@ function makeAgentForwarder(connection) {
     console.log("\n[DEBUG] Proof tx:  ", proofTxSig);
     console.log("[DEBUG] UTXO tx:   ", depositSig);
   }
+
+  process.exit(0);
 })().catch((err) => {
   console.error(`\n❌ Error: ${err.message}`);
   process.exit(1);
