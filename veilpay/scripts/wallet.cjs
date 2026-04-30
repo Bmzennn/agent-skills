@@ -51,6 +51,7 @@ function migrateIfNeeded() {
     // Ensure publicKey field is consistent
     if (!data.publicKey && data.address) { data.publicKey = data.address; delete data.address; }
     fs.writeFileSync(WALLET_FILE, JSON.stringify(data, null, 2));
+    fs.chmodSync(WALLET_FILE, 0o600);
     console.log("ℹ️  Migrated wallet key format from bs58 → base64 (one-time upgrade).");
   } catch {
     // Not bs58 either — leave it alone
@@ -70,9 +71,11 @@ function createWallet() {
     secretKey:  Buffer.from(kp.secretKey).toString("base64"),
   };
   fs.writeFileSync(WALLET_FILE, JSON.stringify(data, null, 2));
+  // Restrict to owner read/write only — private key must never be world-readable
+  fs.chmodSync(WALLET_FILE, 0o600);
   console.log("✅ Wallet created");
   console.log(`   Address: ${data.publicKey}`);
-  console.log(`   Saved:   ${WALLET_FILE}`);
+  console.log(`   Saved:   ${WALLET_FILE} (permissions: 600)`);
   console.log(`\nNext: fund it with SOL — run: node wallet.cjs airdrop   (devnet only)`);
 }
 
@@ -135,6 +138,4 @@ const cmd = process.argv[2];
       console.log("  balance  — check SOL balance");
       console.log("  airdrop  — request 2 SOL on devnet");
   }
-  // Force exit — Solana Connection holds WebSocket open indefinitely
-  process.exit(0);
 })().catch((e) => { console.error("Error:", e.message); process.exit(1); });
