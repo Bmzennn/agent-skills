@@ -135,4 +135,6 @@ const cmd = process.argv[2];
       console.log("  balance  — check SOL balance");
       console.log("  airdrop  — request 2 SOL on devnet");
   }
+  // Force exit — Solana Connection holds WebSocket open indefinitely
+  process.exit(0);
 })().catch((e) => { console.error("Error:", e.message); process.exit(1); });

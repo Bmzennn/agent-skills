@@ -239,6 +239,7 @@ function httpGet(url, headers = {}) {
   printAuth(authValue);
 
   if (retryUrl) await retry(authValue);
+  process.exit(0);
 })().catch((e) => {
   console.error(`\n❌ Error: ${e.message}`);
   process.exit(1);
