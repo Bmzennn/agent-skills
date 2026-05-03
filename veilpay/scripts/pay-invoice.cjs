@@ -100,6 +100,7 @@ function savePayment(invoiceId, authValue, meta = {}) {
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
+// Fallback tables used when the invoice doesn't include mint/decimals directly.
 const TOKEN_DECIMALS = { SOL: 9, USDC: 6, USDT: 6 };
 const TOKEN_MINTS    = {
   SOL:  "So11111111111111111111111111111111111111112",
@@ -124,9 +125,12 @@ function validateInvoice(invoice) {
   if (!invoice.amount || !invoice.token || !invoice.destination || !invoice.invoiceId) {
     throw new Error("Missing required invoice fields (amount, token, destination, invoiceId)");
   }
-  if (!TOKEN_DECIMALS[invoice.token]) {
-    throw new Error(`token must be one of: ${Object.keys(TOKEN_DECIMALS).join(", ")}`);
-  }
+  // mint and decimals can come from the invoice directly (preferred) or from the
+  // fallback tables above. Either is acceptable.
+  const resolvedMint     = invoice.mint     || TOKEN_MINTS[invoice.token];
+  const resolvedDecimals = invoice.decimals ?? TOKEN_DECIMALS[invoice.token];
+  if (!resolvedMint)           throw new Error(`Unknown token '${invoice.token}' and no mint provided in invoice`);
+  if (resolvedDecimals == null) throw new Error(`Unknown decimals for token '${invoice.token}' and none provided in invoice`);
 }
 
 // ─── Key loading ──────────────────────────────────────────────────────────────
@@ -269,11 +273,13 @@ function makeAgentForwarder(connection) {
     process.exit(0);
   }
 
-  const decimals   = TOKEN_DECIMALS[invoice.token];
-  const amountRaw  = BigInt(Math.round(invoice.amount * 10 ** decimals));
-  const mint       = TOKEN_MINTS[invoice.token];
+  // Prefer mint/decimals from the invoice itself; fall back to local tables.
+  const mint     = invoice.mint     || TOKEN_MINTS[invoice.token];
+  const decimals = invoice.decimals ?? TOKEN_DECIMALS[invoice.token];
 
-  if (!mint) { console.error(`No mint for token: ${invoice.token}`); process.exit(1); }
+  if (!mint) { console.error(`No mint for token '${invoice.token}' — add a 'mint' field to the invoice`); process.exit(1); }
+
+  const amountRaw = BigInt(Math.round(invoice.amount * 10 ** decimals));
 
   const invoiceIdMatch = invoice.invoiceId.match(/.{1,2}/g);
   if (!invoiceIdMatch) { console.error("Invalid invoiceId hex"); process.exit(1); }
@@ -292,12 +298,18 @@ function makeAgentForwarder(connection) {
   console.log(`Network:     ${network}`);
 
   const connection = new Connection(RPC, "confirmed");
-  const balance = await connection.getBalance(keypair.publicKey, "confirmed");
+  const balance    = await connection.getBalance(keypair.publicKey, "confirmed");
   const balanceSol = balance / LAMPORTS_PER_SOL;
-  const minRequired = invoice.amount + 0.02; 
-  
+  // For SOL payments the agent needs the invoice amount + gas.
+  // For SPL tokens (USDC etc.) the agent only needs gas (~0.02 SOL).
+  const isSol       = mint === TOKEN_MINTS.SOL;
+  const minRequired = isSol ? invoice.amount + 0.02 : 0.02;
+
   if (balanceSol < minRequired) {
-    console.error(`\n❌ Insufficient SOL. Agent has ${balanceSol.toFixed(3)} SOL but needs at least ${minRequired.toFixed(3)} SOL.`);
+    const reason = isSol
+      ? `needs ${minRequired.toFixed(3)} SOL (${invoice.amount} payment + 0.02 gas)`
+      : `needs ~0.02 SOL for gas`;
+    console.error(`\n❌ Insufficient SOL. Agent has ${balanceSol.toFixed(3)} SOL but ${reason}.`);
     process.exit(1);
   }
 
