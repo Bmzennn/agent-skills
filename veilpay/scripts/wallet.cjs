@@ -21,7 +21,7 @@ const os   = require("os");
 
 const WALLET_DIR  = path.join(os.homedir(), ".veilpay");
 const WALLET_FILE = process.env.VEILPAY_WALLET_PATH || path.join(WALLET_DIR, "wallet.json");
-const NETWORK     = process.env.VEILPAY_NETWORK || "devnet";
+const NETWORK     = process.env.VEILPAY_NETWORK || "mainnet";
 const RPC         = process.env.VEILPAY_RPC_URL ||
   (NETWORK === "mainnet" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com");
 

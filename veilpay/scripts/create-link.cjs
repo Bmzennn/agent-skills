@@ -51,7 +51,7 @@ const get  = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : n
 
 const amountArg   = get("--amount");
 const token       = (get("--token") || "SOL").toUpperCase();
-const network     = get("--network") || process.env.VEILPAY_NETWORK || "mainnet";
+const network     = get("--network") || process.env.VEILPAY_NETWORK || "mainnet"; // mainnet is the production default
 const memo        = get("--memo");
 const lockTo      = get("--lock-to");
 const walletPath  = get("--wallet") || process.env.VEILPAY_WALLET_PATH
@@ -64,13 +64,15 @@ if (!amountArg || isNaN(parseFloat(amountArg))) {
 }
 
 const TOKEN_CONFIG = {
-  SOL:  { mint: "So11111111111111111111111111111111111111112",  decimals: 9 },
-  USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
-  USDT: { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 },
+  SOL:   { mint: "So11111111111111111111111111111111111111112",          decimals: 9 },
+  USDC:  { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",       decimals: 6 },
+  USDT:  { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",       decimals: 6 },
+  UMBRA: { mint: "PRVT6TB7uss3FrUd2D9xs2zqDBsa3GbMJMwCQsgmeta",        decimals: 6 },
+  CASH:  { mint: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",      decimals: 6 },
 };
 
 if (!TOKEN_CONFIG[token]) {
-  console.error(`Unsupported token: ${token}. Use SOL, USDC, or USDT.`);
+  console.error(`Unsupported token: ${token}. Use SOL, USDC, USDT, UMBRA, or CASH.`);
   process.exit(1);
 }
 
@@ -87,7 +89,7 @@ const INDEXER = network === "mainnet"
 
 const CDN_BASE  = "https://d3j9fjdkre529f.cloudfront.net";
 const ZK_CACHE  = path.join(os.homedir(), ".veilpay", "zk-cache");
-const SITE_BASE = "https://veilpayments.xyz";
+const SITE_BASE = process.env.VEILPAY_SITE_URL || "https://veilpay.xyz";
 
 /** Minimum SOL to send to ephemeral account to cover registration + withdrawal fees (0.02 SOL) */
 const EPHEMERAL_BUFFER = 20_000_000;
@@ -153,7 +155,8 @@ function makeNodeZkAssetProvider() {
 
 /**
  * Custom transaction forwarder that skips preflight simulation.
- * Essential for devnet reliability when sending multiple transactions in sequence.
+ * Skips simulation to avoid false failures when sending multi-tx sequences
+ * where earlier txs must be confirmed before later ones can be simulated.
  */
 function makeAgentForwarder(connection) {
   return {
@@ -213,15 +216,18 @@ function makeAgentForwarder(connection) {
   const connection   = new Connection(RPC, "confirmed");
   const balanceBefore = await connection.getBalance(new PublicKey(senderAddress), "confirmed");
   
-  // Link creation requires:
-  // 1. Funding ephemeral (0.02 SOL)
-  // 2. Deposit amount
-  // 3. Register sender fees (approx 0.005)
-  // 4. Create UTXO fees (approx 0.005)
-  const totalRequired = Number(amountRaw) + (EPHEMERAL_BUFFER) + (0.02 * LAMPORTS_PER_SOL);
-  
-  if (balanceBefore < totalRequired) {
-    console.error(`\n❌ Insufficient SOL. Agent has ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(3)} SOL but needs at least ${(totalRequired / LAMPORTS_PER_SOL).toFixed(3)} SOL to create this link.`);
+  // SOL needed regardless of token:
+  //   - Ephemeral buffer (0.02 SOL)
+  //   - Proof buffer account rent (~0.005 SOL, paid from sender wallet, NOT ephemeral)
+  //   - Transaction fees (~0.002 SOL across all steps)
+  // For SOL links: additionally need the link amount itself
+  const solOverhead = EPHEMERAL_BUFFER + (0.007 * LAMPORTS_PER_SOL); // buffer + proof + fees
+  const solForAmount = token === "SOL" ? Number(amountRaw) : 0;       // SOL amount only for SOL links
+  const totalRequiredSol = solOverhead + solForAmount;
+
+  if (balanceBefore < totalRequiredSol) {
+    console.error(`\n❌ Insufficient SOL. Agent has ${(balanceBefore / LAMPORTS_PER_SOL).toFixed(4)} SOL but needs at least ${(totalRequiredSol / LAMPORTS_PER_SOL).toFixed(4)} SOL for fees and the ephemeral buffer.`);
+    if (token !== "SOL") console.error(`   (${token} tokens are sent from your token balance, not SOL.)`);
     process.exit(1);
   }
 

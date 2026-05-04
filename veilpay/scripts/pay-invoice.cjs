@@ -57,7 +57,7 @@ const invoiceArg = args.find((a) => !a.startsWith("--"));
 const get        = (f) => { const i = args.indexOf(f); return i >= 0 ? args[i + 1] : null; };
 const has        = (f) => args.includes(f);
 
-const network    = get("--network") || process.env.VEILPAY_NETWORK || "mainnet";
+const network    = get("--network") || process.env.VEILPAY_NETWORK || "mainnet"; // mainnet is the production default
 const walletPath = get("--wallet") || process.env.VEILPAY_WALLET_PATH
   || path.join(os.homedir(), ".veilpay", "wallet.json");
 const noWait     = has("--no-wait");
@@ -79,33 +79,25 @@ function getPayment(invoiceId) {
   } catch { return null; }
 }
 
-function savePayment(invoiceId, authValue, meta = {}) {
+function savePayment(invoiceId, authValue) {
   fs.mkdirSync(path.dirname(PAYMENTS_LEDGER), { recursive: true });
   let ledger = {};
   if (fs.existsSync(PAYMENTS_LEDGER)) {
     try { ledger = JSON.parse(fs.readFileSync(PAYMENTS_LEDGER, "utf8")); } catch {}
   }
-  ledger[invoiceId] = {
-    authValue,
-    proofTxSig:  meta.proofTxSig  || null,
-    depositSig:  meta.depositSig  || null,
-    amount:      meta.amount      ?? null,
-    token:       meta.token       || null,
-    destination: meta.destination || null,
-    timestamp:   Date.now(),
-    network,
-  };
+  ledger[invoiceId] = { authValue, timestamp: Date.now(), network };
   fs.writeFileSync(PAYMENTS_LEDGER, JSON.stringify(ledger, null, 2));
 }
 
 // ─── Config ───────────────────────────────────────────────────────────────────
 
-// Fallback tables used when the invoice doesn't include mint/decimals directly.
-const TOKEN_DECIMALS = { SOL: 9, USDC: 6, USDT: 6 };
+const TOKEN_DECIMALS = { SOL: 9, USDC: 6, USDT: 6, UMBRA: 6, CASH: 6 };
 const TOKEN_MINTS    = {
-  SOL:  "So11111111111111111111111111111111111111112",
-  USDC: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
-  USDT: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  SOL:   "So11111111111111111111111111111111111111112",
+  USDC:  "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",
+  USDT:  "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",
+  UMBRA: "PRVT6TB7uss3FrUd2D9xs2zqDBsa3GbMJMwCQsgmeta",
+  CASH:  "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",
 };
 
 const RPC = network === "mainnet"
@@ -125,12 +117,9 @@ function validateInvoice(invoice) {
   if (!invoice.amount || !invoice.token || !invoice.destination || !invoice.invoiceId) {
     throw new Error("Missing required invoice fields (amount, token, destination, invoiceId)");
   }
-  // mint and decimals can come from the invoice directly (preferred) or from the
-  // fallback tables above. Either is acceptable.
-  const resolvedMint     = invoice.mint     || TOKEN_MINTS[invoice.token];
-  const resolvedDecimals = invoice.decimals ?? TOKEN_DECIMALS[invoice.token];
-  if (!resolvedMint)           throw new Error(`Unknown token '${invoice.token}' and no mint provided in invoice`);
-  if (resolvedDecimals == null) throw new Error(`Unknown decimals for token '${invoice.token}' and none provided in invoice`);
+  if (!TOKEN_DECIMALS[invoice.token]) {
+    throw new Error(`token must be one of: ${Object.keys(TOKEN_DECIMALS).join(", ")}`);
+  }
 }
 
 // ─── Key loading ──────────────────────────────────────────────────────────────
@@ -273,13 +262,11 @@ function makeAgentForwarder(connection) {
     process.exit(0);
   }
 
-  // Prefer mint/decimals from the invoice itself; fall back to local tables.
-  const mint     = invoice.mint     || TOKEN_MINTS[invoice.token];
-  const decimals = invoice.decimals ?? TOKEN_DECIMALS[invoice.token];
+  const decimals   = TOKEN_DECIMALS[invoice.token];
+  const amountRaw  = BigInt(Math.round(invoice.amount * 10 ** decimals));
+  const mint       = TOKEN_MINTS[invoice.token];
 
-  if (!mint) { console.error(`No mint for token '${invoice.token}' — add a 'mint' field to the invoice`); process.exit(1); }
-
-  const amountRaw = BigInt(Math.round(invoice.amount * 10 ** decimals));
+  if (!mint) { console.error(`No mint for token: ${invoice.token}`); process.exit(1); }
 
   const invoiceIdMatch = invoice.invoiceId.match(/.{1,2}/g);
   if (!invoiceIdMatch) { console.error("Invalid invoiceId hex"); process.exit(1); }
@@ -298,18 +285,19 @@ function makeAgentForwarder(connection) {
   console.log(`Network:     ${network}`);
 
   const connection = new Connection(RPC, "confirmed");
-  const balance    = await connection.getBalance(keypair.publicKey, "confirmed");
+  const balance = await connection.getBalance(keypair.publicKey, "confirmed");
   const balanceSol = balance / LAMPORTS_PER_SOL;
-  // For SOL payments the agent needs the invoice amount + gas.
-  // For SPL tokens (USDC etc.) the agent only needs gas (~0.02 SOL).
-  const isSol       = mint === TOKEN_MINTS.SOL;
-  const minRequired = isSol ? invoice.amount + 0.02 : 0.02;
+  // SOL needed: proof buffer rent + registration fees + tx fees (~0.027 SOL)
+  // Token invoices (USDC etc.) need SOL for gas, not for the token amount itself
+  const solNeeded = invoice.token === "SOL"
+    ? invoice.amount + 0.027
+    : 0.027;
 
-  if (balanceSol < minRequired) {
-    const reason = isSol
-      ? `needs ${minRequired.toFixed(3)} SOL (${invoice.amount} payment + 0.02 gas)`
-      : `needs ~0.02 SOL for gas`;
-    console.error(`\n❌ Insufficient SOL. Agent has ${balanceSol.toFixed(3)} SOL but ${reason}.`);
+  if (balanceSol < solNeeded) {
+    console.error(`\n❌ Insufficient SOL for gas. Agent has ${balanceSol.toFixed(4)} SOL but needs at least ${solNeeded.toFixed(4)} SOL to pay for ZK proof and transaction fees.`);
+    if (invoice.token !== "SOL") {
+      console.error(`   The ${invoice.token} amount (${invoice.amount}) will be deducted from your ${invoice.token} token balance.`);
+    }
     process.exit(1);
   }
 
@@ -358,13 +346,7 @@ function makeAgentForwarder(connection) {
   const authValue = `x402 ${proofTxSig}:${depositSig}:${invoice.invoiceId}`;
 
   // ─── SAVE TO LEDGER ───
-  savePayment(invoice.invoiceId, authValue, {
-    proofTxSig:  proofTxSig,
-    depositSig:  depositSig,
-    amount:      invoice.amount,
-    token:       invoice.token,
-    destination: invoice.destination,
-  });
+  savePayment(invoice.invoiceId, authValue);
 
   console.log("✅ Shielded UTXO created!");
   console.log(`\nAUTHORIZATION: ${authValue}`);
@@ -383,8 +365,6 @@ function makeAgentForwarder(connection) {
     console.log("\n[DEBUG] Proof tx:  ", proofTxSig);
     console.log("[DEBUG] UTXO tx:   ", depositSig);
   }
-
-  process.exit(0);
 })().catch((err) => {
   console.error(`\n❌ Error: ${err.message}`);
   process.exit(1);

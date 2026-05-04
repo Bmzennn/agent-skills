@@ -1,6 +1,6 @@
 ---
 name: veilpay
-description: Make and receive private payments on Solana via VeilPay. Use when an agent needs to send funds without an on-chain link between sender and recipient, generate shareable payment links, claim incoming payments, perform confidential transfers, or query encrypted balances. Powered by the Umbra ZK shielded pool.
+description: Make and receive private payments on Solana via VeilPay. Use when an agent needs to send funds without an on-chain link between sender and recipient, generate shareable payment links, claim incoming payments, perform confidential transfers, or query encrypted balances. Powered by the Umbra ZK shielded pool on Solana mainnet.
 author: Bmzennn
 license: MIT
 metadata: {"category":"privacy","tags":"solana,privacy,zk,finance,agent-payments","securityAssessment":{"gen":"low","socket":"low","snyk":"low"}}
@@ -8,7 +8,7 @@ metadata: {"category":"privacy","tags":"solana,privacy,zk,finance,agent-payments
 
 # VeilPay Agent Skill
 
-VeilPay enables fully private payments on Solana. The sender and recipient are never linked on-chain — a Groth16 ZK proof breaks any cryptographic connection between deposit and withdrawal.
+VeilPay enables fully private payments on Solana mainnet. The sender and recipient are never linked on-chain — a Groth16 ZK proof breaks any cryptographic connection between deposit and withdrawal.
 
 ---
 
@@ -37,12 +37,10 @@ node -e "require('snarkjs'); require('bs58'); console.log('Runtime Ready')"
 
 ### Phase 3: Reliability & Troubleshooting
 
-Based on field feedback, several technical hurdles have been resolved in the current script versions:
-
-1.  **Authorization Format**: Modern VeilPay servers require "Shielded UTXO" (Receiver-Claimable) payments. `pay-invoice.cjs` has been updated to generate a 3-part header: `X-402-Payment: x402 <proofAccountSig>:<utxoSig>:<invoiceId>`.
+1.  **Authorization Format**: VeilPay servers require "Shielded UTXO" (Receiver-Claimable) payments. `pay-invoice.cjs` generates a 3-part header: `X-402-Payment: x402 <proofAccountSig>:<utxoSig>:<invoiceId>`.
 2.  **SDK Response Mapping**: The script correctly maps `createProofAccountSignature` and `createUtxoSignature` from the Umbra SDK to the authorization header.
-3.  **Indexer Lag**: Shielded transactions are not immediately visible to the Umbra indexer. `pay-invoice.cjs` now includes a mandatory 15-second sleep after broadcast to ensure the server can verify the payment on-chain.
-4.  **Devnet Reliability**: All scripts now use `skipPreflight: true` and `confirmed` blockhashes to bypass simulation failures and propagation lag on Solana devnet.
+3.  **Indexer Lag**: Shielded transactions are not immediately visible to the Umbra indexer. `pay-invoice.cjs` includes a mandatory 15-second sleep after broadcast to ensure the server can verify the payment on-chain.
+4.  **Mainnet-only**: All scripts default to Solana mainnet. Use `--network devnet` only for development — devnet SOL and token accounts are not real.
 
 ---
 
@@ -55,7 +53,8 @@ node scripts/wallet.cjs create
 ```
 
 ### Perform Shielded x402 Payment
-Fulfills an x402 invoice by depositing into the Umbra Shielded Pool. 
+Fulfills an x402 invoice by depositing into the Umbra Shielded Pool.  
+**Supports SOL, USDC, USDT, UMBRA, and CASH.**  
 **Note:** Includes a mandatory 15-second wait for indexer sync.
 
 ⚠️ **STRICT POLICY FOR x402 PAYMENTS:**
@@ -68,38 +67,39 @@ Fulfills an x402 invoice by depositing into the Umbra Shielded Pool.
 
 ```bash
 # invoice_json: The "invoice" object from a 402 response
-# --network: devnet or mainnet (default: mainnet)
-node scripts/pay-invoice.cjs '<invoice_json>' [--network devnet]
+node scripts/pay-invoice.cjs '<invoice_json>'
 ```
 
 ### Create Private Payment Link
-Generates a shareable ZK-shielded payment URL.
+Generates a shareable ZK-shielded payment URL. Supports SOL, USDC, USDT, UMBRA, CASH.
 ```bash
-node scripts/create-link.cjs --amount 0.5 --token SOL --network devnet
+node scripts/create-link.cjs --amount 0.5 --token SOL
+node scripts/create-link.cjs --amount 1.00 --token USDC
 ```
 
 ### Claim Private Payment Link
 Autonomously claims funds from a link into the agent's wallet.
 ```bash
-node scripts/claim-link.cjs --link "<url>" --network devnet
+node scripts/claim-link.cjs --link "<url>"
 ```
 
 ### Withdraw Encrypted Balance
 Moves funds from the agent's shielded vault to its public wallet.
 ```bash
 # Withdraw specific amount
-node scripts/withdraw.cjs --token SOL --amount 0.1 --network devnet
+node scripts/withdraw.cjs --token SOL --amount 0.1
 
 # Withdraw full balance
-node scripts/withdraw.cjs --token SOL --all --network devnet
+node scripts/withdraw.cjs --token SOL --all
 ```
 
 ### Flawless Agent Checklist
 
 ```
-□ Is snarkjs installed?           node -e "require('snarkjs')"
-□ Is bs58 version 4.0.1?          node -e "console.log(require('bs58/package.json').version)"
-□ Is wallet.json in base64?       node scripts/wallet.cjs show
-□ Is SOL balance ≥ 0.05?          node scripts/wallet.cjs balance
-□ Is indexer sync wait active?    (Default in pay-invoice.cjs)
+□ Is snarkjs installed?             node -e "require('snarkjs')"
+□ Is bs58 version 4.0.1?            node -e "console.log(require('bs58/package.json').version)"
+□ Is wallet.json in base64?         node scripts/wallet.cjs show
+□ Is SOL balance ≥ 0.05?            node scripts/wallet.cjs balance
+□ Is indexer sync wait active?      (Default in pay-invoice.cjs)
+□ Correct network (mainnet)?        Scripts default to mainnet; use --network devnet only for dev
 ```

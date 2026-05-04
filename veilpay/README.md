@@ -1,6 +1,6 @@
 # VeilPay Agent Skill
 
-Private payments on Solana for AI agents. Powered by the [Umbra ZK shielded pool](https://umbraprivacy.com).
+Private payments on Solana mainnet for AI agents. Powered by the [Umbra ZK shielded pool](https://umbraprivacy.com).
 
 ## Install
 
@@ -19,6 +19,10 @@ npx skills add Bmzennn/agent-skills@veilpay
 | Query balance | `balance.cjs` | Check encrypted balance waiting to be withdrawn |
 | Withdraw balance | `withdraw.cjs` | Move encrypted balance to public wallet |
 
+## Supported tokens
+
+SOL · USDC · USDT · UMBRA · CASH
+
 ## Web app
 
-**[veilpayments.xyz](https://www.veilpayments.xyz)** — full UI for all operations.
+**[veilpay.xyz](https://veilpay.xyz)** — full UI for all operations.
