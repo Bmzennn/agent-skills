@@ -29,8 +29,8 @@ const walletPath = get("--wallet") || process.env.VEILPAY_WALLET_PATH
 
 if (!tokenArg) {
   console.error("Usage:");
-  console.error("  node withdraw.cjs --token <SOL|USDC|USDT> --amount <number>   withdraw specific amount");
-  console.error("  node withdraw.cjs --token <SOL|USDC|USDT> --all              withdraw full balance");
+  console.error("  node withdraw.cjs --token <SOL|USDC|USDT|UMBRA|CASH> --amount <number>   withdraw specific amount");
+  console.error("  node withdraw.cjs --token <SOL|USDC|USDT|UMBRA|CASH> --all              withdraw full balance");
   process.exit(1);
 }
 
@@ -40,14 +40,16 @@ if (!amountArg && !withdrawAll) {
 }
 
 const TOKEN_CONFIG = {
-  SOL:  { mint: "So11111111111111111111111111111111111111112",  decimals: 9 },
-  USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
-  USDT: { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 },
+  SOL:   { mint: "So11111111111111111111111111111111111111112",          decimals: 9 },
+  USDC:  { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",       decimals: 6 },
+  USDT:  { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",       decimals: 6 },
+  UMBRA: { mint: "PRVT6TB7uss3FrUd2D9xs2zqDBsa3GbMJMwCQsgmeta",        decimals: 6 },
+  CASH:  { mint: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",      decimals: 6 },
 };
 
 const symbol = tokenArg.toUpperCase();
 if (!TOKEN_CONFIG[symbol]) {
-  console.error(`Unsupported token: ${tokenArg}. Use SOL, USDC, or USDT.`);
+  console.error(`Unsupported token: ${tokenArg}. Use SOL, USDC, USDT, UMBRA, or CASH.`);
   process.exit(1);
 }
 
