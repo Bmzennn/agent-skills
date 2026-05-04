@@ -93,6 +93,19 @@ node scripts/withdraw.cjs --token SOL --amount 0.1
 node scripts/withdraw.cjs --token SOL --all
 ```
 
+### Query Premium Data (x402)
+Fetches system-wide data from the VeilPay API by fulfilling a shielded payment challenge.
+```bash
+# Query links table
+node scripts/premium.cjs --table links
+
+# Query merchant requests
+node scripts/premium.cjs --table merchant-requests
+
+# Query payment history
+node scripts/premium.cjs --table payments
+```
+
 ### Flawless Agent Checklist
 
 ```
