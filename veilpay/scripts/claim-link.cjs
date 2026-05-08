@@ -199,8 +199,12 @@ function makeAgentForwarder(connection) {
   const { getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver } = require("@umbra-privacy/web-zk-prover");
   const { ReadServiceClient } = require("@umbra-privacy/indexer-read-service-client");
 
-  const OVERAGE_WALLET_ADDR = process.env.VEILPAY_OVERAGE_WALLET || null;
-  const overagePubkey = OVERAGE_WALLET_ADDR ? new PublicKey(OVERAGE_WALLET_ADDR) : null;
+  const OVERAGE_WALLET_ADDR = process.env.NEXT_PUBLIC_OVERAGE_WALLET || process.env.VEILPAY_OVERAGE_WALLET;
+  if (!OVERAGE_WALLET_ADDR) {
+    console.error("❌  NEXT_PUBLIC_OVERAGE_WALLET is not set. Overage SOL cannot be swept — aborting to protect funds.");
+    process.exit(1);
+  }
+  const overagePubkey = new PublicKey(OVERAGE_WALLET_ADDR);
 
   // Load agent wallet (recipient)
   if (!fs.existsSync(walletPath)) {
@@ -434,15 +438,13 @@ function makeAgentForwarder(connection) {
 
   // Add dummy transfers for fee calculation
   sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: 1000 }));
-  if (overagePubkey) {
-    sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: 1000 }));
-  }
+  sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: 1000 }));
 
   const feeCalc = await connection.getFeeForMessage(sweepTx.compileMessage(), "confirmed");
   const fee = BigInt(feeCalc.value || 5000);
 
   // Pop dummies
-  if (overagePubkey) sweepTx.instructions.pop();
+  sweepTx.instructions.pop();
   sweepTx.instructions.pop();
 
   const totalAvailableSol = BigInt(currentSol) - fee;
@@ -463,7 +465,7 @@ function makeAgentForwarder(connection) {
   if (recipientSol > 0n) {
     sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: recipientSol }));
   }
-  if (overageSol > 0n && overagePubkey) {
+  if (overageSol > 0n) {
     sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: overageSol }));
   }
 
