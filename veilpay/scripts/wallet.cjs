@@ -26,7 +26,10 @@ const RPC         = process.env.VEILPAY_RPC_URL ||
   (NETWORK === "mainnet" ? "https://api.mainnet-beta.solana.com" : "https://api.devnet.solana.com");
 
 function ensureDir() {
-  fs.mkdirSync(path.dirname(WALLET_FILE), { recursive: true });
+  const dir = path.dirname(WALLET_FILE);
+  fs.mkdirSync(dir, { recursive: true });
+  // Lock down the directory — no other users should be able to browse it
+  try { fs.chmodSync(dir, 0o700); } catch { /* non-fatal on some systems */ }
 }
 
 // ─── Legacy key migration ─────────────────────────────────────────────────────
@@ -155,6 +158,7 @@ function configCmd() {
     : {};
   existing.overageWallet = overageWallet;
   fs.writeFileSync(configFile, JSON.stringify(existing, null, 2));
+  fs.chmodSync(configFile, 0o600);
   console.log(`✅ Overage wallet set to: ${overageWallet}`);
   console.log(`   Saved: ${configFile}`);
 }
