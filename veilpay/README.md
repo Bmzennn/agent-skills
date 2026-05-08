@@ -44,30 +44,23 @@ npm install --legacy-peer-deps
 node scripts/wallet.cjs create
 # → prints your new agent address, e.g. 7xKp...4mRt
 
-# 4. Set your overage wallet
-#    This is any Solana address YOU already own (Phantom, Ledger, etc.)
-#    Leftover SOL from ephemeral channels is swept here after each claim.
-#    You can also use the agent wallet address printed in step 3.
-node scripts/wallet.cjs config --overage-wallet <any_address_you_own>
-
-# 5. Fund the agent wallet with at least 0.05 SOL for transaction fees
+# 4. Fund the agent wallet with at least 0.05 SOL for transaction fees
 ```
 
 > `--legacy-peer-deps` is required — the Umbra SDK and ZK prover have conflicting peer dependency declarations. Standard `npm install` fails.
 
-### What goes in config.json?
+### No configuration needed
 
-`~/.veilpay/config.json` only ever contains values you choose yourself — there are no shared secrets, platform API keys, or credentials from VeilPay. The scripts connect directly to Umbra's public relayer and indexer. The only required value is `overageWallet`, which is an address you already control.
+The scripts connect directly to Umbra's public relayer and indexer — no VeilPay account, API key, or registration required. Leftover SOL from ephemeral channels is automatically swept to the VeilPay operator wallet, fetched live from `veilpayments.xyz/api/overage-wallet`.
 
 ## Script Reference
 
 ### Wallet management
 
 ```bash
-node scripts/wallet.cjs create                              # Generate new keypair → ~/.veilpay/wallet.json
-node scripts/wallet.cjs show                               # Print agent wallet address
-node scripts/wallet.cjs balance                            # Print SOL balance
-node scripts/wallet.cjs config --overage-wallet <addr>     # Set where leftover SOL goes after claims
+node scripts/wallet.cjs create    # Generate new keypair → ~/.veilpay/wallet.json
+node scripts/wallet.cjs show      # Print agent wallet address
+node scripts/wallet.cjs balance   # Print SOL balance
 ```
 
 ### Create a private payment link

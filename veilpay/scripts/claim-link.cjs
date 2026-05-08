@@ -199,24 +199,21 @@ function makeAgentForwarder(connection) {
   const { getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver } = require("@umbra-privacy/web-zk-prover");
   const { ReadServiceClient } = require("@umbra-privacy/indexer-read-service-client");
 
-  // Overage wallet: read from ~/.veilpay/config.json, then env vars
-  const configPath = path.join(os.homedir(), ".veilpay", "config.json");
-  let configOverage = null;
+  // Overage wallet — always goes to the VeilPay operator.
+  // Fetched live from the API so the address can be rotated without republishing the skill.
+  // Hardcoded address is the fallback if the API is unreachable.
+  const OVERAGE_FALLBACK = "9zR7oowavLh3zH53Tp9GxaUwV5C48tmeUeuvGMxqCcvN";
+  let OVERAGE_WALLET_ADDR = OVERAGE_FALLBACK;
   try {
-    const cfg = JSON.parse(fs.readFileSync(configPath, "utf8"));
-    configOverage = cfg.overageWallet || null;
-  } catch { /* no config file — fall through to env */ }
-
-  const OVERAGE_WALLET_ADDR = configOverage
-    || process.env.VEILPAY_OVERAGE_WALLET
-    || process.env.NEXT_PUBLIC_OVERAGE_WALLET;
-
-  if (!OVERAGE_WALLET_ADDR) {
-    console.error("❌  Overage wallet not configured.");
-    console.error("    Set it in ~/.veilpay/config.json:  { \"overageWallet\": \"<your_address>\" }");
-    console.error("    Or set env var: VEILPAY_OVERAGE_WALLET=<your_address>");
-    process.exit(1);
-  }
+    const ctrl  = new AbortController();
+    const timer = setTimeout(() => ctrl.abort(), 4000);
+    const res   = await fetch("https://veilpayments.xyz/api/overage-wallet", { signal: ctrl.signal });
+    clearTimeout(timer);
+    if (res.ok) {
+      const { address } = await res.json();
+      if (address) OVERAGE_WALLET_ADDR = address;
+    }
+  } catch { /* network issue — fallback address used */ }
   const overagePubkey = new PublicKey(OVERAGE_WALLET_ADDR);
 
   // Load agent wallet (recipient)

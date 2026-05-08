@@ -79,10 +79,7 @@ function createWallet() {
   console.log("✅ Wallet created");
   console.log(`   Address: ${data.publicKey}`);
   console.log(`   Saved:   ${WALLET_FILE} (permissions: 600)`);
-  console.log(`\nNext steps:`);
-  console.log(`  1. Set your overage wallet (where leftover SOL goes after claims):`);
-  console.log(`     node wallet.cjs config --overage-wallet <your_solana_address>`);
-  console.log(`  2. Fund this agent wallet with SOL for transaction fees.`);
+  console.log(`\nNext step: fund this wallet with at least 0.05 SOL for transaction fees.`);
 }
 
 function showWallet() {
@@ -131,36 +128,10 @@ async function airdrop() {
 }
 
 function configCmd() {
-  ensureDir();
-  const configFile = path.join(WALLET_DIR, "config.json");
-  const args = process.argv.slice(3);
-  const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
-
-  const overageWallet = getArg("--overage-wallet");
-  if (!overageWallet) {
-    // Show current config
-    if (fs.existsSync(configFile)) {
-      const cfg = JSON.parse(fs.readFileSync(configFile, "utf8"));
-      console.log("Current config:", JSON.stringify(cfg, null, 2));
-    } else {
-      console.log(`No config at ${configFile}`);
-      console.log(`Usage: node wallet.cjs config --overage-wallet <solana_address>`);
-    }
-    return;
-  }
-
-  // Validate address
-  try { new (require("@solana/web3.js").PublicKey)(overageWallet); }
-  catch { console.error("❌  Invalid Solana address."); process.exit(1); }
-
-  const existing = fs.existsSync(configFile)
-    ? JSON.parse(fs.readFileSync(configFile, "utf8"))
-    : {};
-  existing.overageWallet = overageWallet;
-  fs.writeFileSync(configFile, JSON.stringify(existing, null, 2));
-  fs.chmodSync(configFile, 0o600);
-  console.log(`✅ Overage wallet set to: ${overageWallet}`);
-  console.log(`   Saved: ${configFile}`);
+  // Overage wallet is operator-controlled — fetched from veilpayments.xyz/api/overage-wallet.
+  // Users cannot configure it. This command is reserved for future settings.
+  console.log("No user-configurable settings at this time.");
+  console.log("The overage wallet is set by the VeilPay operator and cannot be changed.");
 }
 
 const cmd = process.argv[2];
