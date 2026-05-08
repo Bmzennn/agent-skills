@@ -89,7 +89,7 @@ const INDEXER = network === "mainnet"
 
 const CDN_BASE  = "https://d3j9fjdkre529f.cloudfront.net";
 const ZK_CACHE  = path.join(os.homedir(), ".veilpay", "zk-cache");
-const SITE_BASE = process.env.VEILPAY_SITE_URL || "https://veilpay.xyz";
+const SITE_BASE = process.env.VEILPAY_SITE_URL || "https://veilpayments.xyz";
 
 /** Minimum SOL to send to ephemeral account to cover registration + withdrawal fees (0.02 SOL) */
 const EPHEMERAL_BUFFER = 20_000_000;

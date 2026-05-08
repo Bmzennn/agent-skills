@@ -24,8 +24,8 @@ const table   = get("--table") || "links";
 const network = get("--network") || process.env.VEILPAY_NETWORK || "mainnet";
 
 const API_BASE = network === "mainnet" 
-  ? "https://veilpay.xyz" 
-  : "https://devnet.veilpay.xyz";
+  ? "https://veilpayments.xyz" 
+  : "https://veilpayments.xyz";
 
 const ENDPOINT = `${API_BASE}/api/premium/${table}`;
 
