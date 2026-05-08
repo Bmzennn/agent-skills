@@ -21,7 +21,7 @@ npx skills add Bmzennn/agent-skills@veilpay
 | Pay x402 invoice | `pay-invoice.cjs` | Pay a shielded x402 API invoice |
 | Query premium data | `premium.cjs` | Fetch VeilPay API data via shielded x402 payment |
 | List payments | `list-payments.cjs` | List payment history for an address |
-| Recover payment | `recover-payment.cjs` | Recover stranded ephemeral SOL after a failed link creation |
+| Recover x402 header | `recover-payment.cjs` | Reconstruct a lost x402 authorization header from invoice ID |
 | Wallet setup | `wallet.cjs` | Create/manage the agent keypair and config |
 
 ## Supported tokens
@@ -150,13 +150,22 @@ node scripts/list-payments.cjs --address <solana_address>
 node scripts/list-payments.cjs                              # uses agent wallet address
 ```
 
-### Recover stranded SOL
+### Recover a lost x402 authorization header
 
-If link creation fails mid-flow, the ephemeral account may retain SOL. Recover it with the original claim URL:
+If an x402 payment succeeded on-chain but the authorization header was lost (process crash, network error), reconstruct it from the invoice ID:
 
 ```bash
-node scripts/recover-payment.cjs --link "https://veilpayments.xyz/claim#<secret>:USDC"
+# Reconstruct from local ledger (instant if payment was recorded)
+node scripts/recover-payment.cjs --invoice-id <64-char-hex>
+
+# Reconstruct by scanning on-chain tx history
+node scripts/recover-payment.cjs --invoice-id <64-char-hex> --deposit-sig <base58-sig>
+
+# Reconstruct and immediately retry the original request
+node scripts/recover-payment.cjs --invoice-id <64-char-hex> --retry-url https://api.example.com/endpoint
 ```
+
+The `invoiceId` comes from the original `402 Payment Required` response body. Successful payments are always recorded in `~/.veilpay/payments.json` — check there first before scanning on-chain.
 
 ## Environment variables
 
