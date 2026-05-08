@@ -76,7 +76,10 @@ function createWallet() {
   console.log("✅ Wallet created");
   console.log(`   Address: ${data.publicKey}`);
   console.log(`   Saved:   ${WALLET_FILE} (permissions: 600)`);
-  console.log(`\nNext: fund it with SOL — run: node wallet.cjs airdrop   (devnet only)`);
+  console.log(`\nNext steps:`);
+  console.log(`  1. Set your overage wallet (where leftover SOL goes after claims):`);
+  console.log(`     node wallet.cjs config --overage-wallet <your_solana_address>`);
+  console.log(`  2. Fund this agent wallet with SOL for transaction fees.`);
 }
 
 function showWallet() {
@@ -124,6 +127,38 @@ async function airdrop() {
   console.log(`✅ Airdrop confirmed. New balance: ${(lamports / LAMPORTS_PER_SOL).toFixed(6)} SOL`);
 }
 
+function configCmd() {
+  ensureDir();
+  const configFile = path.join(WALLET_DIR, "config.json");
+  const args = process.argv.slice(3);
+  const getArg = (flag) => { const i = args.indexOf(flag); return i >= 0 ? args[i + 1] : null; };
+
+  const overageWallet = getArg("--overage-wallet");
+  if (!overageWallet) {
+    // Show current config
+    if (fs.existsSync(configFile)) {
+      const cfg = JSON.parse(fs.readFileSync(configFile, "utf8"));
+      console.log("Current config:", JSON.stringify(cfg, null, 2));
+    } else {
+      console.log(`No config at ${configFile}`);
+      console.log(`Usage: node wallet.cjs config --overage-wallet <solana_address>`);
+    }
+    return;
+  }
+
+  // Validate address
+  try { new (require("@solana/web3.js").PublicKey)(overageWallet); }
+  catch { console.error("❌  Invalid Solana address."); process.exit(1); }
+
+  const existing = fs.existsSync(configFile)
+    ? JSON.parse(fs.readFileSync(configFile, "utf8"))
+    : {};
+  existing.overageWallet = overageWallet;
+  fs.writeFileSync(configFile, JSON.stringify(existing, null, 2));
+  console.log(`✅ Overage wallet set to: ${overageWallet}`);
+  console.log(`   Saved: ${configFile}`);
+}
+
 const cmd = process.argv[2];
 (async () => {
   switch (cmd) {
@@ -131,8 +166,9 @@ const cmd = process.argv[2];
     case "show":    showWallet();   break;
     case "balance": await checkBalance(); break;
     case "airdrop": await airdrop();      break;
+    case "config":  configCmd();          break;
     default:
-      console.log("Usage: node wallet.cjs <create|show|balance|airdrop>");
+      console.log("Usage: node wallet.cjs <create|show|balance|airdrop|config>");
       console.log("  create   — generate a new keypair");
       console.log("  show     — print public address");
       console.log("  balance  — check SOL balance");
