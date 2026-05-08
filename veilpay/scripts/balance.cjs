@@ -1,6 +1,10 @@
 #!/usr/bin/env node
 /**
- * balance.cjs — Query encrypted (shielded) balances for your VeilPay wallet.
+ * balance.cjs — Query public and encrypted (shielded) balances for your VeilPay wallet.
+ *
+ * Shows two sections:
+ *   Public wallet  — regular on-chain balances (SOL + all supported SPL tokens)
+ *   Shielded pool  — encrypted balances waiting to be withdrawn
  *
  * Usage:
  *   node balance.cjs [--network devnet|mainnet] [--wallet <path>]
@@ -41,6 +45,8 @@ const TOKEN_CONFIG = {
     process.exit(1);
   }
 
+  const { Connection, PublicKey, LAMPORTS_PER_SOL } = require("@solana/web3.js");
+  const { getAssociatedTokenAddressSync } = require("@solana/spl-token");
   const { createSignerFromPrivateKeyBytes, getUmbraClient,
           getEncryptedBalanceQuerierFunction,
           getPollingTransactionForwarder, getPollingComputationMonitor } = require("@umbra-privacy/sdk");
@@ -48,8 +54,40 @@ const TOKEN_CONFIG = {
   const walletData = JSON.parse(fs.readFileSync(walletPath, "utf8"));
   const secretKeyBytes = Buffer.from(walletData.secretKey, "base64");
 
-  const signer = await createSignerFromPrivateKeyBytes(secretKeyBytes);
-  console.log(`\nEncrypted balances for ${signer.address} on ${network}:`);
+  const signer  = await createSignerFromPrivateKeyBytes(secretKeyBytes);
+  const address = signer.address.toString();
+  const pubkey  = new PublicKey(address);
+
+  console.log(`\nWallet: ${address}`);
+  console.log(`Network: ${network}\n`);
+
+  // ── Public balances ──────────────────────────────────────────────────────────
+  const connection = new Connection(RPC, "confirmed");
+
+  console.log("── Public wallet ───────────────────────────────────────");
+
+  // SOL
+  const solLamports = await connection.getBalance(pubkey, "confirmed");
+  const solHuman    = (solLamports / LAMPORTS_PER_SOL).toFixed(6);
+  console.log(`  SOL    ${solHuman}`);
+
+  // SPL tokens
+  for (const [symbol, cfg] of Object.entries(TOKEN_CONFIG)) {
+    if (symbol === "SOL") continue;
+    try {
+      const ata     = getAssociatedTokenAddressSync(new PublicKey(cfg.mint), pubkey, true);
+      const info    = await connection.getTokenAccountBalance(ata, "confirmed");
+      const human   = parseFloat(info.value.uiAmountString ?? "0").toFixed(cfg.decimals === 6 ? 2 : 4);
+      if (parseFloat(human) > 0) {
+        console.log(`  ${symbol.padEnd(6)} ${human}`);
+      }
+    } catch {
+      // ATA doesn't exist — balance is 0, skip
+    }
+  }
+
+  // ── Shielded (encrypted) balances ────────────────────────────────────────────
+  console.log("\n── Shielded pool (encrypted) ───────────────────────────");
 
   const client = await getUmbraClient(
     { signer, network, rpcUrl: RPC, rpcSubscriptionsUrl: RPC.replace("https://", "wss://"),
@@ -80,8 +118,7 @@ const TOKEN_CONFIG = {
   }
 
   if (!hasBalance) {
-    console.log("  No encrypted balances found.");
-    console.log("  Receive a confidential transfer to build a balance.");
+    console.log("  No shielded balances found.");
   }
 
   // Force exit — Umbra SDK holds WebSocket connections open indefinitely
