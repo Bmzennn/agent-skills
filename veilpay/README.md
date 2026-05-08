@@ -22,6 +22,7 @@ npx skills add Bmzennn/agent-skills@veilpay
 | Query premium data | `premium.cjs` | Fetch VeilPay API data via shielded x402 payment |
 | List payments | `list-payments.cjs` | List payment history for an address |
 | Recover x402 header | `recover-payment.cjs` | Reconstruct a lost x402 authorization header from invoice ID |
+| Recover stranded SOL | `sweep-stranded.cjs` | Sweep SOL from ephemerals stuck after a failed link creation |
 | Wallet setup | `wallet.cjs` | Create/manage the agent keypair and config |
 
 ## Supported tokens
@@ -148,6 +149,16 @@ node scripts/premium.cjs --table payments
 ```bash
 node scripts/list-payments.cjs --address <solana_address>
 node scripts/list-payments.cjs                              # uses agent wallet address
+```
+
+### Recover stranded SOL from failed link creation
+
+If `create-link.cjs` fails mid-flow (after funding the ephemeral account), the SOL is automatically saved to `~/.veilpay/stranded.json`. Recover it at any time:
+
+```bash
+node scripts/sweep-stranded.cjs           # sweep all stranded accounts back to your wallet
+node scripts/sweep-stranded.cjs --list    # inspect without sweeping
+node scripts/sweep-stranded.cjs --address <pubkey>  # sweep one specific account
 ```
 
 ### Recover a lost x402 authorization header

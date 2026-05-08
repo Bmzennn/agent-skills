@@ -265,6 +265,27 @@ function makeAgentForwarder(connection) {
   await connection.confirmTransaction({ signature: fundSig, blockhash, lastValidBlockHeight }, "confirmed");
   console.log(`      Funded ✓ (${fundLamports / LAMPORTS_PER_SOL} SOL)`);
 
+  // Save ephemeral key immediately after funding — before anything can fail.
+  // If the script crashes from here, sweep-stranded.cjs can recover the SOL.
+  const STRANDED_FILE = path.join(os.homedir(), ".veilpay", "stranded.json");
+  const strandedEntry = {
+    address:    ephemeralKeypair.publicKey.toString(),
+    privateKey: Buffer.from(ephemeralPrivKey).toString("base64"),
+    fundedAt:   Date.now(),
+    amount:     fundLamports,
+    network,
+  };
+  try {
+    let stranded = [];
+    if (fs.existsSync(STRANDED_FILE)) {
+      try { stranded = JSON.parse(fs.readFileSync(STRANDED_FILE, "utf8")); } catch {}
+    }
+    stranded.push(strandedEntry);
+    fs.mkdirSync(path.dirname(STRANDED_FILE), { recursive: true });
+    fs.writeFileSync(STRANDED_FILE, JSON.stringify(stranded, null, 2));
+    fs.chmodSync(STRANDED_FILE, 0o600);
+  } catch { /* non-fatal — best effort */ }
+
   // ── Step 3: Register ephemeral + sender with Umbra ─────────────────────────
   console.log("\n[3/4] Registering privacy channels (ZK proofs)…");
 
@@ -344,6 +365,15 @@ function makeAgentForwarder(connection) {
   const deltaSign      = deltaLamports >= 0 ? "+" : "";
   const deltaSol       = (deltaLamports / LAMPORTS_PER_SOL).toFixed(6);
   const afterSol       = (balanceAfter / LAMPORTS_PER_SOL).toFixed(6);
+
+  // Link created successfully — remove ephemeral from stranded list
+  try {
+    if (fs.existsSync(STRANDED_FILE)) {
+      const stranded = JSON.parse(fs.readFileSync(STRANDED_FILE, "utf8"));
+      const cleaned  = stranded.filter(e => e.address !== ephemeralKeypair.publicKey.toString());
+      fs.writeFileSync(STRANDED_FILE, JSON.stringify(cleaned, null, 2));
+    }
+  } catch { /* non-fatal */ }
 
   console.log("\n✅ Private link created!");
   console.log(`\n   Link:    ${url}`);
