@@ -78,11 +78,11 @@ const RELAYER = network === "mainnet"
   : "https://relayer.api-devnet.umbraprivacy.com";
 
 const TOKEN_CONFIG = {
-  SOL:  { mint: "So11111111111111111111111111111111111111112",  decimals: 9 },
-  USDC: { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v", decimals: 6 },
-  USDT: { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB", decimals: 6 },
-  UMBRA: { mint: "PRVT6TB7uss3FrUd2D9xs2zqDBsa3GbMJMwCQsgmeta",        decimals: 6 },
-  CASH:  { mint: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",      decimals: 6 },
+  SOL:   { mint: "So11111111111111111111111111111111111111112",       decimals: 9 },
+  USDC:  { mint: "EPjFWdd5AufqSSqeM2qN1xzybapC8G4wEGGkZwyTDt1v",    decimals: 6 },
+  USDT:  { mint: "Es9vMFrzaCERmJfrF4H2FYD4KCoNkY11McCe8BenwNYB",    decimals: 6 },
+  UMBRA: { mint: "PRVT6TB7uss3FrUd2D9xs2zqDBsa3GbMJMwCQsgmeta",      decimals: 6 },
+  CASH:  { mint: "CASHx9KJUStyftLFWGvEVf59SGeG9sh5FfcnZMVPCASH",   decimals: 6 },
 };
 
 const CDN_BASE    = "https://d3j9fjdkre529f.cloudfront.net";
@@ -199,8 +199,8 @@ function makeAgentForwarder(connection) {
   const { getClaimReceiverClaimableUtxoIntoEncryptedBalanceProver } = require("@umbra-privacy/web-zk-prover");
   const { ReadServiceClient } = require("@umbra-privacy/indexer-read-service-client");
 
-  const OVERAGE_WALLET_ADDR = process.env.VEILPAY_OVERAGE_WALLET || "D8Uj7qE8L1uX8D6f7Y6E6G6X6S6Y6B6G6R6E6D6E6R6E"; // Mock or default
-  const overagePubkey = new PublicKey(OVERAGE_WALLET_ADDR);
+  const OVERAGE_WALLET_ADDR = process.env.VEILPAY_OVERAGE_WALLET || null;
+  const overagePubkey = OVERAGE_WALLET_ADDR ? new PublicKey(OVERAGE_WALLET_ADDR) : null;
 
   // Load agent wallet (recipient)
   if (!fs.existsSync(walletPath)) {
@@ -434,13 +434,15 @@ function makeAgentForwarder(connection) {
 
   // Add dummy transfers for fee calculation
   sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: 1000 }));
-  sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: 1000 }));
-  
+  if (overagePubkey) {
+    sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: 1000 }));
+  }
+
   const feeCalc = await connection.getFeeForMessage(sweepTx.compileMessage(), "confirmed");
   const fee = BigInt(feeCalc.value || 5000);
-  
+
   // Pop dummies
-  sweepTx.instructions.pop();
+  if (overagePubkey) sweepTx.instructions.pop();
   sweepTx.instructions.pop();
 
   const totalAvailableSol = BigInt(currentSol) - fee;
@@ -461,7 +463,7 @@ function makeAgentForwarder(connection) {
   if (recipientSol > 0n) {
     sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: recipientPubkey, lamports: recipientSol }));
   }
-  if (overageSol > 0n) {
+  if (overageSol > 0n && overagePubkey) {
     sweepTx.add(SystemProgram.transfer({ fromPubkey: ephKeypair.publicKey, toPubkey: overagePubkey, lamports: overageSol }));
   }
 
