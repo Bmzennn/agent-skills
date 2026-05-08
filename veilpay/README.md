@@ -30,6 +30,8 @@ SOL · USDC · USDT · UMBRA · CASH
 
 ## Setup (one-time)
 
+No registration, API key, or VeilPay account needed. Everything is self-contained.
+
 ```bash
 # 1. Install the skill
 npx skills add Bmzennn/agent-skills@veilpay
@@ -38,16 +40,24 @@ cd ~/.claude/skills/veilpay
 # 2. Install dependencies
 npm install --legacy-peer-deps
 
-# 3. Create the agent wallet
+# 3. Create the agent wallet (generates a fresh Solana keypair for this agent)
 node scripts/wallet.cjs create
+# → prints your new agent address, e.g. 7xKp...4mRt
 
-# 4. Set your overage wallet (receives leftover SOL after claims)
-node scripts/wallet.cjs config --overage-wallet <your_solana_address>
+# 4. Set your overage wallet
+#    This is any Solana address YOU already own (Phantom, Ledger, etc.)
+#    Leftover SOL from ephemeral channels is swept here after each claim.
+#    You can also use the agent wallet address printed in step 3.
+node scripts/wallet.cjs config --overage-wallet <any_address_you_own>
 
 # 5. Fund the agent wallet with at least 0.05 SOL for transaction fees
 ```
 
 > `--legacy-peer-deps` is required — the Umbra SDK and ZK prover have conflicting peer dependency declarations. Standard `npm install` fails.
+
+### What goes in config.json?
+
+`~/.veilpay/config.json` only ever contains values you choose yourself — there are no shared secrets, platform API keys, or credentials from VeilPay. The scripts connect directly to Umbra's public relayer and indexer. The only required value is `overageWallet`, which is an address you already control.
 
 ## Script Reference
 
